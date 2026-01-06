@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>PUC Student Tracker</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
+<body class="bg-gray-900 text-white min-h-screen">
+
+  <!-- Container: sidebar + main content -->
+  <div class="flex max-w-[1600px] mx-auto gap-6 p-6">
+
+    <!-- Left Sidebar: Upcoming Contests -->
+    <div class="flex-shrink-0 w-[350px] bg-gray-800 p-4 rounded-lg h-[700px] overflow-y-auto">
+      <h2 class="text-xl font-bold mb-4 text-center">🕒 Upcoming CF Contests</h2>
+      <div id="upcomingContests" class="flex flex-col gap-2">
+        <p class="text-yellow-300 text-center">Loading contests... ⏳</p>
+      </div>
+    </div>
+
+    <!-- Main Content -->
+    <div class="flex-1 bg-gray-900 p-6 rounded-lg min-w-[900px]">
+
+      <!-- Weekly Winner (Injected by JS) -->
+      <div id="weeklyWinner" class="mb-6 text-center text-2xl font-bold text-yellow-300"></div>
+
+      <h1 class="text-3xl font-bold mb-6 text-center">📊 PUC Student Tracker</h1>
+
+      <!-- Buttons -->
+      <div class="flex gap-4 mb-4 flex-wrap justify-center">
+        <button onclick="loadStudents('solvedToday')" class="bg-blue-600 p-2 rounded hover:bg-blue-700 font-bold">Sort by Solved Today</button>
+        <button onclick="loadStudents('rating')" class="bg-green-600 p-2 rounded hover:bg-green-700 font-bold">Sort by Rating</button>
+        <button onclick="loadStudents(currentSort)" class="bg-purple-600 p-2 rounded hover:bg-purple-700 font-bold">Load Students</button>
+      </div>
+
+      <!-- Difficulty Legend -->
+      <div class="flex gap-4 mb-4 justify-center items-center flex-wrap">
+        <div class="flex items-center gap-1"><div class="w-4 h-4 bg-green-400 rounded-full"></div><span>Easy &lt;1200</span></div>
+        <div class="flex items-center gap-1"><div class="w-4 h-4 bg-orange-400 rounded-full"></div><span>Medium 1200-1800</span></div>
+        <div class="flex items-center gap-1"><div class="w-4 h-4 bg-red-400 rounded-full"></div><span>Hard &gt;1800</span></div>
+      </div>
+
+      <!-- Search Bar -->
+      <div class="flex justify-center mb-4">
+        <input
+          type="text"
+          id="handleSearch"
+          placeholder="Search by handle..."
+          class="p-2 rounded w-64 text-black"
+          oninput="filterByHandle()"
+        />
+      </div>
+
+      <!-- Leaderboard -->
+      <div id="leaderboard" class="mb-8 w-full">
+        <p class="text-center text-yellow-300">Loading leaderboard... ⏳</p>
+      </div>
+
+      <!-- Weekly Tag Winners -->
+      <div id="weeklyTagWinners" class="mb-8"></div>
+
+      <!-- Weekly Solve Graph -->
+      <div class="bg-gray-800 p-4 rounded mb-6">
+        <h2 class="text-xl font-bold mb-2">📈 Weekly Solve Graph</h2>
+        <canvas id="weeklyChart" class="bg-gray-900 rounded-lg w-full h-72"></canvas>
+        <div class="mt-2 flex gap-2 justify-center flex-wrap">
+          <button onclick="showAllWeekly()" class="bg-blue-600 p-2 rounded hover:bg-blue-700 font-bold">Show All Students</button>
+          <button onclick="showMyWeekly()" class="bg-green-600 p-2 rounded hover:bg-green-700 font-bold">Show Only Me</button>
+        </div>
+      </div>
+
+    </div> <!-- End Main Content -->
+
+  </div> <!-- End Container -->
+
+<script src="script.js"></script>
+</body>
+</html>
