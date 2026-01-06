@@ -42,7 +42,7 @@ async function loadStudents(sortBy = currentSort) {
 `;
 
     try {
-        const res = await fetch("http://localhost:3000/api/students/today");
+        const res = await fetch("https://puc-student-tracker.onrender.com/api/students/today");
         const data = await res.json();
         if (data.status !== "OK") throw new Error("Failed to fetch");
 
@@ -215,7 +215,7 @@ async function loadUpcomingContests() {
     container.innerHTML = `<p class="text-yellow-300 text-center">Loading contests... ⏳</p>`;
 
     try {
-        const res = await fetch("http://localhost:3000/api/contests/upcoming");
+        const res = await fetch("https://puc-student-tracker.onrender.com/api/contests/upcoming");
         const data = await res.json();
         if (data.status !== "OK") throw new Error("Failed to fetch contests");
 
