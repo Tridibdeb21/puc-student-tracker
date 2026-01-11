@@ -28,6 +28,17 @@
       <div id="upcomingContests" class="flex flex-col gap-2">
         <p class="text-yellow-300 text-center">Loading contests... ⏳</p>
       </div>
+
+      <h2 class="text-xl font-bold mb-4 mt-6 text-center">📅 Previous Days Leaderboard</h2>
+      <div class="flex flex-col gap-2 justify-center">
+        <button onclick="loadPreviousDay(1)" class="bg-gray-600 hover:bg-gray-700 p-2 rounded font-bold">Yesterday</button>
+        <button onclick="loadPreviousDay(2)" class="bg-gray-600 hover:bg-gray-700 p-2 rounded font-bold">2 Days Ago</button>
+        <button onclick="loadPreviousDay(3)" class="bg-gray-600 hover:bg-gray-700 p-2 rounded font-bold">3 Days Ago</button>
+        <button onclick="loadPreviousDay(4)" class="bg-gray-600 hover:bg-gray-700 p-2 rounded font-bold">4 Days Ago</button>
+        <button onclick="loadPreviousDay(5)" class="bg-gray-600 hover:bg-gray-700 p-2 rounded font-bold">5 Days Ago</button>
+        <button onclick="loadPreviousDay(6)" class="bg-gray-600 hover:bg-gray-700 p-2 rounded font-bold">6 Days Ago</button>
+        <button onclick="loadPreviousDay(7)" class="bg-gray-600 hover:bg-gray-700 p-2 rounded font-bold">7 Days Ago</button>
+      </div>
     </div>
 
     <!-- Main Content -->
@@ -117,5 +128,58 @@
   </footer>
 
   <script src="script.js"></script>
+
+  <script>
+    let currentSort = 'solvedToday';
+
+    function renderLeaderboard(students) {
+      const container = document.getElementById('leaderboard');
+      if (!students || students.length === 0) {
+        container.innerHTML = '<p class="text-center text-yellow-300">No data available.</p>';
+        return;
+      }
+
+      const table = document.createElement('table');
+      table.className = 'min-w-full bg-gray-800 rounded-lg overflow-hidden text-sm';
+
+      const thead = document.createElement('thead');
+      thead.innerHTML = `
+        <tr class="bg-gray-700">
+          <th class="p-2 text-left">#</th>
+          <th class="p-2 text-left">Handle</th>
+          <th class="p-2 text-left w-[180px]">Solved Today</th>
+          <th class="p-2 text-left">Rating</th>
+          <th class="p-2 text-left">Max Rating</th>
+          <th class="p-2 text-left">Streak</th>
+        </tr>
+      `;
+      table.appendChild(thead);
+
+      const tbody = document.createElement('tbody');
+      students.forEach(s => {
+        const tr = document.createElement('tr');
+        tr.className = 'border-b border-gray-700 hover:bg-gray-700';
+        tr.innerHTML = `
+          <td class="p-2">${s.position}${s.medal ? ' ' + s.medal : ''}</td>
+          <td class="p-2">${s.handle}</td>
+          <td class="p-2 w-[180px]">${s.solvedToday}</td>
+          <td class="p-2">${s.rating}</td>
+          <td class="p-2">${s.maxRating}</td>
+          <td class="p-2">${s.streak}</td>
+        `;
+        tbody.appendChild(tr);
+      });
+
+      table.appendChild(tbody);
+      container.innerHTML = '';
+      container.appendChild(table);
+    }
+
+    function scrollToSection(id) {
+      const el = document.getElementById(id);
+      if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+  </script>
+
 </body>
 </html>
