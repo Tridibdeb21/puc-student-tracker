@@ -293,6 +293,6 @@ app.get("/api/contests/last-3-standings", async (req, res) => {
 
 // -------------------- SERVER --------------------
 app.listen(3000, () => {
-    console.log("✅ Backend running at https://puc-student-tracker.onrender.com");
+    console.log("✅ Backend running at http://localhost:3000");
 });
 
