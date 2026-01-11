@@ -7,7 +7,6 @@ const cors = require("cors");
 const app = express();
 app.use(express.json());
 app.use(cors());
-
 // -------------------- CACHE --------------------
 let CACHE = {}; // { today: { result, weeklyTagWinners, weeklyWinner }, dayOffset: {...} }
 const CACHE_TTL = 10 * 60 * 1000; // 10 minutes
