@@ -1,4 +1,4 @@
-const API_BASE = "https://puc-student-tracker.onrender.com"; 
+const API_BASE = "https://puc-student-tracker.onrender.com";
 
 const cfColors = {
     newbie: "text-gray-400",
