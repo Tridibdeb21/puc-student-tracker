@@ -1,4 +1,4 @@
-const API_BASE = "https://puc-student-tracker.onrender.com";
+const API_BASE = "http://localhost:3000"; 
 
 const cfColors = {
     newbie: "text-gray-400",
@@ -15,7 +15,7 @@ const cfColors = {
 
 let currentSort = "solvedToday";
 let studentsData = [];
-let weeklyChartInstance;
+let weeklyChartInstance = null;
 
 // -------------------- NAVIGATION --------------------
 function scrollToSection(id){
@@ -23,36 +23,33 @@ function scrollToSection(id){
 }
 
 // -------------------- LOAD STUDENTS --------------------
-async function loadStudents(sortBy = currentSort) {
+async function loadStudents(sortBy=currentSort){
     currentSort = sortBy;
-
     const leaderboard = document.getElementById("leaderboard");
     leaderboard.innerHTML = `<p class="text-center text-yellow-300 py-4">Loading leaderboard... ⏳</p>`;
 
-    try {
+    try{
         const res = await fetch(`${API_BASE}/api/students/today`);
         const data = await res.json();
-        if (data.status !== "OK") throw new Error("Failed to fetch");
+        if(data.status!=="OK") throw new Error("Failed to fetch");
 
         studentsData = data.result;
         const weeklyTagWinners = data.weeklyTagWinners || {};
         const weeklyWinner = data.weeklyWinner;
 
-        // SORT
-        if (sortBy === "solvedToday") {
-            studentsData.sort((a,b)=>b.solvedToday - a.solvedToday || (a.rating||0) - (b.rating||0));
+        // ---------------- SORT ----------------
+        if(sortBy==="solvedToday"){
+            // Sort by problems solved today descending, then rating ascending
+            studentsData.sort((a,b)=>{
+                if(b.solvedToday !== a.solvedToday) return b.solvedToday - a.solvedToday;
+                return (a.rating || 0) - (b.rating || 0);
+            });
         } else if(sortBy==="rating"){
             studentsData.sort((a,b)=>(b.rating||0)-(a.rating||0));
         }
 
-        // MEDALS (lower rating wins tie)
-        const medals=["🥇","🥈","🥉"];
-        studentsData.forEach((s,i)=>{
-            s.medal = "";
-        });
-        for(let i=0;i<studentsData.length;i++){
-            if(i<3) studentsData[i].medal = medals[i];
-        }
+        // POSITION
+        studentsData.forEach((s,i)=>s.position=i+1);
 
         renderWeeklyWinner(weeklyWinner);
         renderLeaderboard(studentsData);
@@ -67,6 +64,25 @@ async function loadStudents(sortBy = currentSort) {
     }
 }
 
+// -------------------- LOAD PREVIOUS DAYS --------------------
+async function loadPreviousDay(dayOffset){
+    const leaderboard = document.getElementById("leaderboard");
+    leaderboard.innerHTML = `<p class="text-center text-yellow-300 py-4">Loading previous day leaderboard... ⏳</p>`;
+    try{
+        const res = await fetch(`${API_BASE}/api/students/day/${dayOffset}`);
+        const data = await res.json();
+        if(data.status!=="OK") throw new Error("Failed to fetch");
+
+        studentsData = data.result;
+        studentsData.forEach((s,i)=>s.position=i+1);
+        renderLeaderboard(studentsData);
+
+    }catch(err){
+        console.error(err);
+        leaderboard.innerHTML = "<p class='text-center text-red-400 py-4'>❌ Error fetching data</p>";
+    }
+}
+
 // -------------------- WEEKLY WINNER --------------------
 function renderWeeklyWinner(handle){
     const container=document.getElementById("weeklyWinner");
@@ -75,16 +91,33 @@ function renderWeeklyWinner(handle){
 
 // -------------------- LEADERBOARD --------------------
 function renderLeaderboard(data){
-    let html = `<table class="w-full table-fixed bg-gray-800 rounded-lg text-sm md:text-base">
+    let html = `<table class="w-full table-fixed bg-gray-800 rounded-lg text-sm md:text-base min-w-[1000px]">
     <thead class="bg-gray-700">
     <tr>
-        <th>#</th><th>Handle</th><th>Rating</th><th>MaxRating</th><th>Rank</th><th>Streak</th><th>Solved Today</th><th>Difficulty</th><th>Problems Solved Today</th>
+        <th class="w-10">Pos</th>
+        <th>Handle</th>
+        <th>Rating</th>
+        <th>MaxRating</th>
+        <th>Rank</th>
+        <th>Streak</th>
+        <th class="w-36">Solved Today</th> <!-- Increased size -->
+        <th>Difficulty</th>
+        <th class="w-72">Problems Solved Today</th> <!-- Increased size -->
     </tr>
     </thead><tbody>`;
 
-    data.forEach((s,index)=>{
+    data.forEach((s,i)=>{
         const colorClass=cfColors[s.rank?.replace(/\s+/g,"_").toLowerCase()]||"text-white";
-        const problemsHtml = s.todayProblems.length ? s.todayProblems.map(p=>`<a href="https://codeforces.com/problemset/problem/${p.contestId}/${p.index}" target="_blank" class="text-blue-400 hover:underline break-words">${p.name} (${p.rating}) [${p.tags.join(', ')}]</a>`).join("<br>") : "-";
+
+        // Medals
+        let medal = "";
+        if(i===0) medal="🥇";
+        else if(i===1) medal="🥈";
+        else if(i===2) medal="🥉";
+
+        const problemsHtml = s.todayProblems.length 
+            ? s.todayProblems.map(p=>`<a href="https://codeforces.com/problemset/problem/${p.contestId}/${p.index}" target="_blank" class="text-blue-400 hover:underline break-words">${p.name} (${p.rating}) [${p.tags.join(', ')}]</a>`).join("<br>") 
+            : "-";
 
         const diffHtml = `<div class="flex gap-1 flex-wrap justify-center">
             ${s.difficultyCount.easy?`<div class="w-4 h-4 bg-green-400 rounded-full text-xs flex items-center justify-center text-black">${s.difficultyCount.easy}</div>`:""}
@@ -94,13 +127,13 @@ function renderLeaderboard(data){
         </div>`;
 
         html+=`<tr class="border-t border-gray-700">
-            <td class="text-center">${s.medal||index+1}</td>
+            <td class="text-center">${s.position} ${medal}</td>
             <td><a href="https://codeforces.com/profile/${s.handle}" target="_blank" class="${colorClass} font-bold hover:underline">${s.handle}</a></td>
             <td class="text-center">${s.rating}</td>
             <td class="text-center">${s.maxRating}</td>
             <td class="text-center">${s.rank}</td>
             <td class="text-center">${s.streak}</td>
-            <td class="text-center">${s.solvedToday}</td>
+            <td class="text-center font-bold">${s.solvedToday}</td>
             <td>${diffHtml}</td>
             <td class="break-words">${problemsHtml}</td>
         </tr>`;
@@ -212,31 +245,32 @@ async function loadLast3Contests(){
         const data=await res.json();
         if(data.status!=="OK") throw new Error("Failed");
 
-        container.innerHTML=`<h2 class="text-2xl font-bold mb-4 text-center text-yellow-300">🏆 Last 3 CF Contests Standings</h2>
-        <div class="grid grid-cols-1 md:grid-cols-3 gap-4">`;
-
-        data.contests.forEach(contest=>{
-            let table=`<div class="bg-gray-700 p-4 rounded overflow-x-auto">
-            <h3 class="text-lg font-bold mb-2 text-center text-blue-400">${contest.name}</h3>
-            <table class="w-full text-sm text-center">
-            <thead><tr><th>Handle</th><th>Standing</th><th>Rating Δ</th></tr></thead><tbody>`;
-
-            contest.participants.forEach(p=>{
-                const color=p.ratingChange>0?"text-green-400":p.ratingChange<0?"text-red-400":"text-gray-300";
-                table+=`<tr>
-                    <td><a href="https://codeforces.com/profile/${p.handle}" target="_blank" class="${cfColors[p.rank?.replace(/\s+/g,"_").toLowerCase()]||"text-white"} font-bold hover:underline">${p.handle}</a></td>
-                    <td>${p.standing}</td>
-                    <td class="${color} font-bold">${p.ratingChange!=="—"?p.ratingChange:"—"}</td>
+        let html=`<h2 class="text-2xl font-bold mb-4 text-center">🏁 Last 3 Contests Standings</h2>`;
+        data.contests.forEach(c=>{
+            html+=`<h3 class="text-xl font-bold mt-2 mb-1 text-center">${c.name}</h3>`;
+            html+=`<table class="w-full table-fixed bg-gray-800 rounded-lg text-sm md:text-base mb-4">
+            <thead class="bg-gray-700"><tr>
+            <th>Pos</th><th>Handle</th><th>Standing</th><th>Rating Change</th></tr></thead><tbody>`;
+            c.participants.forEach((p,i)=>{
+                const rc=p.ratingChange;
+                let rcSymbol="";
+                if(rc!=="—"){
+                    rcSymbol = rc>0 ? `<span class="text-green-400 font-bold">+${rc}</span>` : `<span class="text-red-400 font-bold">${rc}</span>`;
+                }
+                html+=`<tr class="border-t border-gray-700">
+                    <td class="text-center">${i+1}</td>
+                    <td><a href="https://codeforces.com/profile/${p.handle}" target="_blank" class="text-blue-400 hover:underline">${p.handle}</a></td>
+                    <td class="text-center">${p.standing}</td>
+                    <td class="text-center">${rcSymbol}</td>
                 </tr>`;
             });
-            table+="</tbody></table></div>";
-            container.innerHTML+=table;
+            html+="</tbody></table>";
         });
+        container.innerHTML=html;
 
-        container.innerHTML+="</div>";
     }catch(err){
         console.error(err);
-        container.innerHTML=`<p class="text-red-400 text-center">❌ Unable to load last 3 contests standings</p>`;
+        container.innerHTML=`<p class="text-red-400 text-center">❌ Unable to load last 3 contests</p>`;
     }
 }
 
