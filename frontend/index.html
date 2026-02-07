@@ -2,119 +2,657 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <title>PUC Student Tracker</title>
+  <title>PUC Student Tracker - ALL Students</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <style>
+    .chart-container {
+      position: relative;
+      height: 400px;
+      width: 100%;
+    }
+    
+    .loading-spinner {
+      border: 4px solid rgba(255, 255, 255, 0.3);
+      border-radius: 50%;
+      border-top: 4px solid #ffffff;
+      width: 40px;
+      height: 40px;
+      animation: spin 1s linear infinite;
+      margin: 20px auto;
+    }
+    
+    @keyframes spin {
+      0% { transform: rotate(0deg); }
+      100% { transform: rotate(360deg); }
+    }
+    
+    .segment {
+      background: linear-gradient(135deg, rgba(30, 30, 40, 0.8) 0%, rgba(40, 40, 60, 0.8) 100%);
+      border-radius: 10px;
+      padding: 20px;
+      margin-bottom: 20px;
+      border-left: 5px solid #3B82F6;
+    }
+    
+    .segment-title {
+      color: #3B82F6;
+      font-size: 1.5rem;
+      font-weight: bold;
+      margin-bottom: 15px;
+      padding-bottom: 10px;
+      border-bottom: 2px solid #374151;
+    }
+    
+    .fade-in {
+      animation: fadeIn 0.5s ease-in;
+    }
+    
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(10px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+    
+    .scrollable-table {
+      max-height: 600px;
+      overflow-y: auto;
+    }
+    
+    .scrollable-table::-webkit-scrollbar {
+      width: 8px;
+    }
+    
+    .scrollable-table::-webkit-scrollbar-track {
+      background: #374151;
+      border-radius: 4px;
+    }
+    
+    .scrollable-table::-webkit-scrollbar-thumb {
+      background: #6B7280;
+      border-radius: 4px;
+    }
+    
+    .scrollable-table::-webkit-scrollbar-thumb:hover {
+      background: #4B5563;
+    }
+    
+    .contest-card {
+      transition: all 0.3s ease;
+      border: 1px solid #4B5563;
+    }
+    
+    .contest-card:hover {
+      transform: translateY(-2px);
+      border-color: #3B82F6;
+      box-shadow: 0 4px 12px rgba(59, 130, 246, 0.3);
+    }
+    
+    .manual-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+      gap: 15px;
+      margin-top: 20px;
+    }
+    
+    .manual-card {
+      background: linear-gradient(135deg, rgba(55, 65, 81, 0.9) 0%, rgba(31, 41, 55, 0.9) 100%);
+      border-radius: 10px;
+      padding: 20px;
+      border-left: 4px solid;
+      transition: all 0.3s ease;
+    }
+    
+    .manual-card:hover {
+      transform: translateY(-3px);
+      box-shadow: 0 8px 20px rgba(0, 0, 0, 0.3);
+    }
+    
+    .manual-card h3 {
+      font-size: 1.2rem;
+      font-weight: bold;
+      margin-bottom: 10px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    
+    .manual-card ul {
+      list-style-type: disc;
+      padding-left: 20px;
+      margin-top: 10px;
+    }
+    
+    .manual-card li {
+      margin-bottom: 5px;
+      font-size: 0.9rem;
+      line-height: 1.4;
+    }
+    
+    .student-count-badge {
+      background: linear-gradient(135deg, #10B981 0%, #059669 100%);
+      color: white;
+      padding: 2px 8px;
+      border-radius: 12px;
+      font-size: 0.75rem;
+      font-weight: bold;
+    }
+    
+    .error-badge {
+      background: linear-gradient(135deg, #EF4444 0%, #DC2626 100%);
+      color: white;
+      padding: 2px 8px;
+      border-radius: 12px;
+      font-size: 0.75rem;
+      font-weight: bold;
+    }
+    
+    .refresh-btn {
+      background: linear-gradient(135deg, #3B82F6 0%, #1D4ED8 100%);
+      color: white;
+      padding: 8px 16px;
+      border-radius: 8px;
+      font-weight: bold;
+      border: none;
+      cursor: pointer;
+      transition: all 0.3s ease;
+    }
+    
+    .refresh-btn:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 4px 12px rgba(59, 130, 246, 0.4);
+    }
+    
+    .refresh-btn:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+      transform: none;
+    }
+    
+    .progress-bar {
+      height: 4px;
+      background: linear-gradient(90deg, #3B82F6, #10B981);
+      border-radius: 2px;
+      transition: width 0.3s ease;
+    }
+    
+    .status-indicator {
+      display: inline-block;
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      margin-right: 6px;
+    }
+    
+    .status-online {
+      background-color: #10B981;
+      box-shadow: 0 0 8px #10B981;
+    }
+    
+    .status-offline {
+      background-color: #EF4444;
+      box-shadow: 0 0 8px #EF4444;
+    }
+    
+    .status-loading {
+      background-color: #F59E0B;
+      box-shadow: 0 0 8px #F59E0B;
+      animation: pulse 1.5s infinite;
+    }
+    
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.5; }
+    }
+    
+    .tooltip {
+      position: relative;
+      display: inline-block;
+    }
+    
+    .tooltip .tooltip-text {
+      visibility: hidden;
+      width: 200px;
+      background-color: #1F2937;
+      color: #fff;
+      text-align: center;
+      border-radius: 6px;
+      padding: 8px;
+      position: absolute;
+      z-index: 100;
+      bottom: 125%;
+      left: 50%;
+      transform: translateX(-50%);
+      opacity: 0;
+      transition: opacity 0.3s;
+      font-size: 12px;
+      border: 1px solid #374151;
+    }
+    
+    .tooltip:hover .tooltip-text {
+      visibility: visible;
+      opacity: 1;
+    }
+  </style>
 </head>
+
 <body class="bg-gray-900 text-white min-h-screen flex flex-col">
 
   <!-- Navigation Bar -->
-  <nav class="bg-gray-800 p-4 flex flex-wrap gap-4 justify-center sticky top-0 z-50">
-    <button onclick="scrollToSection('weeklyWinner')" class="bg-blue-600 hover:bg-blue-700 p-2 rounded font-bold">Weekly Winner</button>
-    <button onclick="scrollToSection('leaderboard')" class="bg-green-600 hover:bg-green-700 p-2 rounded font-bold">Leaderboard</button>
-    <button onclick="scrollToSection('weeklyTagWinners')" class="bg-purple-600 hover:bg-purple-700 p-2 rounded font-bold">Weekly Tags</button>
-    <button onclick="scrollToSection('last3Contests')" class="bg-yellow-600 hover:bg-yellow-700 p-2 rounded font-bold">Last 3 Contests</button>
-    <button onclick="scrollToSection('weeklyChart')" class="bg-red-600 hover:bg-red-700 p-2 rounded font-bold">Weekly Graph</button>
-    <button onclick="scrollToSection('upcomingContests')" class="bg-teal-600 hover:bg-teal-700 p-2 rounded font-bold">Upcoming Contests</button>
+  <nav class="bg-gray-800 p-3 flex flex-wrap gap-2 justify-center sticky top-0 z-50">
+    <button onclick="scrollToSection('dailyProblem')" class="bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-700 hover:to-purple-700 p-2 rounded font-bold text-sm">📅 Daily Problem</button>
+    <button onclick="scrollToSection('manual')" class="bg-gradient-to-r from-blue-600 to-cyan-600 hover:from-blue-700 hover:to-cyan-700 p-2 rounded font-bold text-sm">📖 User Manual</button>
+    <button onclick="scrollToSection('leaderboard')" class="bg-gradient-to-r from-green-600 to-emerald-600 hover:from-green-700 hover:to-emerald-700 p-2 rounded font-bold text-sm">📊 Leaderboard</button>
+    <button onclick="scrollToSection('previousDays')" class="bg-gradient-to-r from-yellow-600 to-amber-600 hover:from-yellow-700 hover:to-amber-700 p-2 rounded font-bold text-sm">📅 Previous Days</button>
+    <button onclick="scrollToSection('weeklyChart')" class="bg-gradient-to-r from-red-600 to-pink-600 hover:from-red-700 hover:to-pink-700 p-2 rounded font-bold text-sm">📈 Weekly Graph</button>
+    <button onclick="scrollToSection('contests')" class="bg-gradient-to-r from-teal-600 to-cyan-600 hover:from-teal-700 hover:to-cyan-700 p-2 rounded font-bold text-sm">🏁 Contests</button>
+    <button onclick="scrollToSection('feedback')" class="bg-gradient-to-r from-pink-600 to-rose-600 hover:from-pink-700 hover:to-rose-700 p-2 rounded font-bold text-sm">💌 Feedback</button>
   </nav>
 
   <!-- Container -->
-  <div class="flex max-w-[1600px] mx-auto gap-6 p-6 flex-1 flex-wrap">
+  <div class="flex max-w-[1600px] mx-auto gap-6 p-4 flex-1 flex-wrap">
 
     <!-- Sidebar -->
-    <div class="flex-shrink-0 w-[350px] bg-gray-800 p-4 rounded-lg h-[700px] overflow-y-auto">
-      <h2 class="text-xl font-bold mb-4 text-center">🕒 Upcoming CF Contests</h2>
-      <div id="upcomingContests" class="flex flex-col gap-2">
-        <p class="text-yellow-300 text-center">Loading contests... ⏳</p>
+    <div class="flex-shrink-0 w-[300px] bg-gray-800 p-4 rounded-lg h-auto">
+      <!-- Bangladesh Time Display -->
+      <div class="bg-gradient-to-r from-gray-700 to-gray-800 p-3 rounded-lg mb-4 text-center border border-gray-600">
+        <div class="text-sm text-gray-300">🌍 Bangladesh Time</div>
+        <div id="bdTime" class="text-lg font-bold text-yellow-300">Loading...</div>
+        <div class="text-xs text-gray-400 mt-1">Updates every 10 seconds</div>
       </div>
 
-      <h2 class="text-xl font-bold mb-4 mt-6 text-center">📅 Previous Days Leaderboard</h2>
-      <div class="flex flex-col gap-2 justify-center">
-        <button onclick="loadPreviousDay(1)" class="bg-gray-600 hover:bg-gray-700 p-2 rounded font-bold">Yesterday</button>
-        <button onclick="loadPreviousDay(2)" class="bg-gray-600 hover:bg-gray-700 p-2 rounded font-bold">2 Days Ago</button>
-        <button onclick="loadPreviousDay(3)" class="bg-gray-600 hover:bg-gray-700 p-2 rounded font-bold">3 Days Ago</button>
-        <button onclick="loadPreviousDay(4)" class="bg-gray-600 hover:bg-gray-700 p-2 rounded font-bold">4 Days Ago</button>
-        <button onclick="loadPreviousDay(5)" class="bg-gray-600 hover:bg-gray-700 p-2 rounded font-bold">5 Days Ago</button>
-        <button onclick="loadPreviousDay(6)" class="bg-gray-600 hover:bg-gray-700 p-2 rounded font-bold">6 Days Ago</button>
-        <button onclick="loadPreviousDay(7)" class="bg-gray-600 hover:bg-gray-700 p-2 rounded font-bold">7 Days Ago</button>
+      <!-- Student Count Info -->
+      <div class="bg-gray-700 p-3 rounded-lg mb-4 text-center">
+        <div class="text-sm text-gray-300">👥 Total Students</div>
+        <div id="studentCount" class="text-lg font-bold text-green-400">Loading...</div>
+        <div id="studentCountDetails" class="text-xs text-gray-400 mt-1"></div>
+        <button onclick="loadStudentCount()" class="refresh-btn mt-2 text-xs px-3 py-1">
+          ↻ Refresh Count
+        </button>
+      </div>
+
+      <!-- Loading Progress -->
+      <div id="loadingProgress" class="hidden mb-4">
+        <div class="flex justify-between text-xs mb-1">
+          <span class="text-gray-300">Loading Students:</span>
+          <span id="progressText" class="text-yellow-300">0%</span>
+        </div>
+        <div class="progress-bar" id="progressBar" style="width: 0%"></div>
+        <div id="progressDetails" class="text-xs text-gray-400 mt-1 text-center"></div>
+      </div>
+
+      <!-- Quick Actions -->
+      <div class="mb-4">
+        <h3 class="text-lg font-bold mb-2 text-center text-blue-300">⚡ Quick Actions</h3>
+        <div class="flex flex-col gap-2">
+          <button onclick="loadStudents('solvedToday')" class="bg-blue-600 hover:bg-blue-700 p-2 rounded font-bold text-sm">
+            Sort by Solved Today
+          </button>
+          <button onclick="loadStudents('rating')" class="bg-green-600 hover:bg-green-700 p-2 rounded font-bold text-sm">
+            Sort by Rating
+          </button>
+          <button onclick="showToday()" class="bg-yellow-600 hover:bg-yellow-700 p-2 rounded font-bold text-sm">
+            Show Today
+          </button>
+          <button onclick="forceRefresh()" class="bg-red-600 hover:bg-red-700 p-2 rounded font-bold text-sm">
+            🔄 Force Refresh All
+          </button>
+        </div>
+      </div>
+      
+      <!-- Status Panel -->
+      <div id="statusPanel" class="mt-4 bg-gray-700 p-3 rounded text-xs">
+        <p class="font-bold text-green-400 mb-2 flex items-center">
+          <span class="status-indicator status-online" id="statusDot"></span>
+          📊 System Status
+        </p>
+        <ul class="space-y-1 text-gray-300">
+          <li id="statusLoading">🔄 Loading: <span class="text-yellow-300">Initializing...</span></li>
+          <li id="statusCache">🕒 Cache: <span class="text-green-300">Fresh</span></li>
+          <li id="statusApi">🌐 Codeforces API: <span class="text-green-300">Online</span></li>
+          <li id="statusGraph">📈 Weekly Graph: <span class="text-green-300">Ready</span></li>
+          <li id="statusContests">🏁 Contest Data: <span class="text-green-300">Ready</span></li>
+        </ul>
+      </div>
+      
+      <!-- Info Panel -->
+      <div class="mt-4 bg-gray-700 p-3 rounded text-xs">
+        <p class="font-bold text-green-400 mb-2">📊 Important Info:</p>
+        <ul class="space-y-1 text-gray-300">
+          <li>✅ Shows <span class="text-yellow-300">ALL students</span> in all sections</li>
+          <li>✅ Weekly graph shows <span class="text-green-400">ALL students</span> data</li>
+          <li>✅ Contest standings show <span class="text-yellow-300">ALL students</span></li>
+          <li>✅ Weekly tags show <span class="text-blue-300">ALL students</span> data</li>
+          <li>🕐 All times in Bangladesh Time (UTC+6)</li>
+          <li>⚡ Press F5 to refresh page</li>
+          <li>🔍 Ctrl+F to search handles</li>
+        </ul>
       </div>
     </div>
 
     <!-- Main Content -->
-    <div class="flex-1 bg-gray-900 p-6 rounded-lg min-w-[900px]">
+    <div class="flex-1 min-w-[300px]">
+
+      <!-- Daily Problem Section -->
+      <div id="dailyProblem" class="segment fade-in">
+        <h2 class="segment-title">🎯 Daily Practice Problem</h2>
+        <p class="text-gray-300 mb-4 text-sm">Solve this problem daily to improve your skills! (Rating: 800-1200)</p>
+        
+        <div id="dailyProblemContent" class="text-center">
+          <div class="loading-spinner" style="width: 30px; height: 30px; border-width: 3px;"></div>
+          <p class="text-yellow-300">Loading today's problem...</p>
+        </div>
+        
+        <div class="mt-3 text-center text-xs text-gray-400 bg-gray-800 p-2 rounded">
+          <p>⚠️ <span class="font-bold">Note:</span> Only first-time correct submissions are counted. Duplicate solves of same problem are ignored.</p>
+        </div>
+      </div>
+
+      <!-- User Manual Section -->
+      <div id="manual" class="segment fade-in">
+        <h2 class="segment-title">📖 User Manual & Rules</h2>
+        
+        <div class="manual-grid">
+          <!-- Website Purpose -->
+          <div class="manual-card" style="border-left-color: #3B82F6;">
+            <h3 class="text-blue-400">🎯 Website Purpose</h3>
+            <p class="text-gray-300 text-sm mb-2">This platform tracks PUC (Programming University Club) students' Codeforces activity including:</p>
+            <ul class="text-gray-300">
+              <li>Daily problem solving progress</li>
+              <li>Weekly performance and trends</li>
+              <li>Contest participation and standings</li>
+              <li>Tag-wise performance analysis</li>
+            </ul>
+          </div>
+
+          <!-- Weekly Winner Criteria -->
+          <div class="manual-card" style="border-left-color: #10B981;">
+            <h3 class="text-green-400">🏆 Weekly Winner Criteria</h3>
+            <p class="text-gray-300 text-sm mb-2">Weekly winner is selected based on:</p>
+            <ul class="text-gray-300">
+              <li>Must solve at least <span class="font-bold">5 days</span> in a week</li>
+              <li>Each day must have at least <span class="font-bold">1 unique solve</span></li>
+              <li>Tie-breaker: <span class="font-bold">Higher rating</span> wins</li>
+              <li>Displayed at the top of the leaderboard</li>
+            </ul>
+          </div>
+
+          <!-- Leaderboard Rules -->
+          <div class="manual-card" style="border-left-color: #8B5CF6;">
+            <h3 class="text-purple-400">📊 Leaderboard Rules</h3>
+            <ul class="text-gray-300">
+              <li>Sorted by <span class="font-bold">problems solved today</span> (descending)</li>
+              <li>Tie-breaker: <span class="font-bold">Lower rating</span> (ascending)</li>
+              <li>Medals: 🥇 1st, 🥈 2nd, 🥉 3rd</li>
+              <li>Difficulty colors shown with counts</li>
+              <li>Shows <span class="font-bold">ALL students</span> in the list</li>
+            </ul>
+          </div>
+
+          <!-- Contest Rules -->
+          <div class="manual-card" style="border-left-color: #EF4444;">
+            <h3 class="text-red-400">🏁 Contest Rules</h3>
+            <ul class="text-gray-300">
+              <li>Only <span class="font-bold">Non-Div.1 contests</span> in standings</li>
+              <li>Live contests show <span class="font-bold">🔥 LIVE</span> symbol</li>
+              <li>Contests starting within 24 hours highlighted</li>
+              <li>Shows <span class="font-bold">ALL upcoming contests</span></li>
+              <li>Shows <span class="font-bold">ALL students</span> in contest standings</li>
+            </ul>
+          </div>
+
+          <!-- Unique Solves Rules -->
+          <div class="manual-card" style="border-left-color: #F59E0B;">
+            <h3 class="text-yellow-400">⚡ Unique Solves Only</h3>
+            <ul class="text-gray-300">
+              <li>Only <span class="font-bold">first-time correct submissions</span> counted</li>
+              <li>Duplicate problem solves <span class="font-bold">NOT counted</span></li>
+              <li>Each problem counted once per student</li>
+              <li>Applies to streak, weekly graph, and totals</li>
+              <li>Ensures fair competition</li>
+            </ul>
+          </div>
+
+          <!-- Navigation Guide -->
+          <div class="manual-card" style="border-left-color: #06B6D4;">
+            <h3 class="text-cyan-400">🎮 Navigation Guide</h3>
+            <ul class="text-gray-300">
+              <li><span class="font-bold">Daily Problem:</span> Random 800-1200 rating problem</li>
+              <li><span class="font-bold">Leaderboard:</span> Today's performance ranking</li>
+              <li><span class="font-bold">Previous Days:</span> Historical leaderboards</li>
+              <li><span class="font-bold">Weekly Graph:</span> 7-day progress visualization</li>
+              <li><span class="font-bold">Contests:</span> Upcoming & past contest data</li>
+            </ul>
+          </div>
+        </div>
+        
+        <!-- Time Zone Info -->
+        <div class="mt-6 bg-gray-800 p-4 rounded">
+          <h3 class="text-xl font-bold mb-2 text-yellow-400">🕐 Time Zone Information</h3>
+          <p class="text-gray-300">
+            All dates and times are displayed in <span class="font-bold text-yellow-300">Bangladesh Time (UTC+6)</span>.
+            This includes:
+          </p>
+          <ul class="list-disc pl-5 mt-2 text-gray-300">
+            <li>Leaderboard dates for previous days</li>
+            <li>Problem submission times</li>
+            <li>Contest start times</li>
+            <li>Weekly graph dates</li>
+          </ul>
+          <p class="mt-2 text-gray-300">
+            <span class="font-bold">Note:</span> Duplicate problem solves are filtered from weekly graphs.
+            Each problem is counted only once per student.
+          </p>
+        </div>
+      </div>
 
       <!-- Weekly Winner -->
-      <div id="weeklyWinner" class="mb-6 text-center text-2xl font-bold text-yellow-300"></div>
-
-      <h1 class="text-3xl font-bold mb-6 text-center">
-        📊 PUC Student Tracker
-      </h1>
-
-      <!-- Buttons -->
-      <div class="flex gap-4 mb-4 flex-wrap justify-center">
-        <button onclick="loadStudents('solvedToday')" class="bg-blue-600 p-2 rounded hover:bg-blue-700 font-bold">
-          Sort by Solved Today
-        </button>
-        <button onclick="loadStudents('rating')" class="bg-green-600 p-2 rounded hover:bg-green-700 font-bold">
-          Sort by Rating
-        </button>
-        <button onclick="loadStudents(currentSort)" class="bg-purple-600 p-2 rounded hover:bg-purple-700 font-bold">
-          Reload Students
-        </button>
-      </div>
-
-      <!-- Difficulty Legend -->
-      <div class="flex gap-4 mb-4 justify-center items-center flex-wrap text-sm">
-        <div class="flex items-center gap-1">
-          <div class="w-4 h-4 bg-green-400 rounded-full"></div> &lt;1200
-        </div>
-        <div class="flex items-center gap-1">
-          <div class="w-4 h-4 bg-lime-400 rounded-full"></div> 1200–1399
-        </div>
-        <div class="flex items-center gap-1">
-          <div class="w-4 h-4 bg-orange-400 rounded-full"></div> 1400–1599
-        </div>
-        <div class="flex items-center gap-1">
-          <div class="w-4 h-4 bg-red-400 rounded-full"></div> ≥1600
+      <div id="weeklyWinner" class="segment fade-in">
+        <h2 class="segment-title">🏆 Weekly Winner</h2>
+        <div class="text-center">
+          <div class="loading-spinner" style="width: 30px; height: 30px; border-width: 3px;"></div>
+          <p class="text-yellow-300">Loading weekly winner...</p>
         </div>
       </div>
 
-      <!-- Search -->
-      <div class="flex justify-center mb-4">
-        <input
-          type="text"
-          id="handleSearch"
-          placeholder="Search by handle..."
-          class="p-2 rounded w-64 text-black"
-          oninput="filterByHandle()"
-        />
+      <!-- Leaderboard Section -->
+      <div id="leaderboardSection" class="segment fade-in">
+        <div class="flex justify-between items-center mb-4">
+          <h2 class="segment-title">📊 Today's Leaderboard</h2>
+          <button onclick="loadStudents()" class="refresh-btn text-sm px-4 py-2" id="refreshLeaderboardBtn">
+            ↻ Refresh Leaderboard
+          </button>
+        </div>
+        
+        <!-- Search and Stats -->
+        <div class="flex flex-col sm:flex-row justify-between items-center mb-4 gap-3">
+          <div class="flex items-center gap-2">
+            <input
+              type="text"
+              id="handleSearch"
+              placeholder="Search by handle..."
+              class="p-2 rounded w-64 text-black text-sm"
+              oninput="filterByHandle()"
+            />
+            <button onclick="clearSearch()" class="bg-gray-600 hover:bg-gray-700 p-2 rounded text-sm">
+              Clear
+            </button>
+          </div>
+          <div id="leaderboardStats" class="text-sm">
+            <span class="text-green-400">Loading...</span> students loaded
+          </div>
+        </div>
+        
+        <div class="scrollable-table">
+          <div id="leaderboard" class="w-full">
+            <div class="loading-spinner"></div>
+            <p class="text-center text-yellow-300 py-4">Loading leaderboard... ⏳</p>
+            <p class="text-center text-gray-400 text-sm">Fetching data for ALL students, please wait...</p>
+          </div>
+        </div>
       </div>
 
-      <!-- Leaderboard -->
-      <div id="leaderboard" class="mb-8 w-full overflow-x-auto">
-        <p class="text-center text-yellow-300">Loading leaderboard... ⏳</p>
+      <!-- Previous Days Section -->
+      <div id="previousDays" class="segment fade-in">
+        <h2 class="segment-title">📅 Previous Days Leaderboard</h2>
+        <p class="text-gray-300 mb-4 text-sm">Select a date to view historical leaderboard data:</p>
+        
+        <div class="flex flex-wrap gap-2 mb-4 justify-center">
+          <button onclick="loadPreviousDay(1)" class="bg-gray-600 hover:bg-gray-700 p-2 rounded font-bold text-sm">Yesterday</button>
+          <button onclick="loadPreviousDay(2)" class="bg-gray-600 hover:bg-gray-700 p-2 rounded font-bold text-sm">2 Days Ago</button>
+          <button onclick="loadPreviousDay(3)" class="bg-gray-600 hover:bg-gray-700 p-2 rounded font-bold text-sm">3 Days Ago</button>
+          <button onclick="loadPreviousDay(4)" class="bg-gray-600 hover:bg-gray-700 p-2 rounded font-bold text-sm">4 Days Ago</button>
+          <button onclick="loadPreviousDay(5)" class="bg-gray-600 hover:bg-gray-700 p-2 rounded font-bold text-sm">5 Days Ago</button>
+          <button onclick="loadPreviousDay(6)" class="bg-gray-600 hover:bg-gray-700 p-2 rounded font-bold text-sm">6 Days Ago</button>
+          <button onclick="loadPreviousDay(7)" class="bg-gray-600 hover:bg-gray-700 p-2 rounded font-bold text-sm">7 Days Ago</button>
+        </div>
+        
+        <div id="previousDaysDisplay" class="hidden">
+          <div id="dateDisplay" class="mb-4 text-center text-lg font-bold text-yellow-300"></div>
+          <div class="scrollable-table">
+            <div id="previousLeaderboard" class="w-full">
+              <!-- Previous day leaderboard will load here -->
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Quick Facts Section -->
+      <div id="quickFacts" class="segment fade-in">
+        <h2 class="segment-title">⚡ Quick Facts</h2>
+        <div id="quickStats" class="text-center">
+          <div class="loading-spinner" style="width: 30px; height: 30px; border-width: 3px;"></div>
+          <p class="text-yellow-300">Loading quick facts...</p>
+        </div>
       </div>
 
       <!-- Weekly Tag Winners -->
-      <div id="weeklyTagWinners" class="mb-8"></div>
+      <div id="weeklyTagWinners" class="segment fade-in">
+        <h2 class="segment-title">🏆 Weekly Tag Winners</h2>
+        <div class="text-center mb-4">
+          <p class="text-gray-300 text-sm">Showing tag-wise winners based on ALL students' unique problem solves this week</p>
+        </div>
+        <div id="tagWinnersContainer" class="text-center">
+          <div class="loading-spinner" style="width: 30px; height: 30px; border-width: 3px;"></div>
+          <p class="text-yellow-300">Loading weekly tags...</p>
+        </div>
+      </div>
 
-      <!-- Last 3 Contest Standings -->
-      <div id="last3Contests" class="mb-8"></div>
+      <!-- Weekly Graph Section -->
+      <div id="weeklyChartSection" class="segment fade-in">
+        <h2 class="segment-title">📈 Weekly Progress Graph</h2>
+        <p class="text-gray-300 mb-3 text-sm">Showing unique problems solved each day by ALL students (duplicates filtered)</p>
+        
+        <div class="chart-container">
+          <canvas id="weeklyChart"></canvas>
+        </div>
 
-      <!-- Weekly Graph -->
-      <div class="bg-gray-800 p-4 rounded mb-6">
-        <h2 class="text-xl font-bold mb-2">📈 Weekly Solve Graph</h2>
-        <canvas id="weeklyChart" class="bg-gray-900 rounded-lg w-full h-72"></canvas>
-
-        <div class="mt-2 flex gap-2 justify-center flex-wrap">
-          <button onclick="showAllWeekly()"
-                  class="bg-blue-600 p-2 rounded hover:bg-blue-700 font-bold">
-            Show All Students
+        <div class="mt-4 flex gap-2 justify-center flex-wrap">
+          <button onclick="showAllWeekly()" class="bg-blue-600 hover:bg-blue-700 p-2 rounded font-bold text-sm">
+            Show All (Top 10)
           </button>
-          <button onclick="selectWeeklyHandle()"
-                  class="bg-green-600 p-2 rounded hover:bg-green-700 font-bold">
+          <button onclick="showTop5Weekly()" class="bg-green-600 hover:bg-green-700 p-2 rounded font-bold text-sm">
+            Show Top 5
+          </button>
+          <button onclick="selectWeeklyHandle()" class="bg-purple-600 hover:bg-purple-700 p-2 rounded font-bold text-sm">
             Select Handle
           </button>
+          <button onclick="refreshWeeklyChart()" class="bg-yellow-600 hover:bg-yellow-700 p-2 rounded font-bold text-sm">
+            ↻ Refresh Graph
+          </button>
+        </div>
+        
+        <div class="mt-4 bg-gray-800 p-3 rounded text-xs">
+          <p class="text-green-400 font-bold">📊 Graph Info:</p>
+          <ul class="list-disc pl-5 mt-1 text-gray-300">
+            <li>Shows <span class="text-yellow-300">ALL students'</span> data (Top 10 displayed for clarity)</li>
+            <li>Only counts <span class="font-bold">first-time correct submissions</span></li>
+            <li>Duplicate problem solves are <span class="font-bold">not counted</span></li>
+            <li>Each problem counted only once per student</li>
+            <li>Data fetched from Codeforces API for all students</li>
+          </ul>
+        </div>
+      </div>
+
+      <!-- Contests Section (Combined Upcoming and Past) -->
+      <div id="contests" class="segment fade-in">
+        <h2 class="segment-title">🏁 Contests</h2>
+        
+        <!-- Upcoming Contests -->
+        <div class="mb-8">
+          <div class="flex justify-between items-center mb-3">
+            <h3 class="text-xl font-bold text-teal-300">🕒 Upcoming Contests</h3>
+            <button onclick="loadUpcomingContests()" class="refresh-btn text-xs px-3 py-1">
+              ↻ Refresh
+            </button>
+          </div>
+          <div id="upcomingContests" class="space-y-3">
+            <div class="loading-spinner" style="width: 30px; height: 30px; border-width: 3px;"></div>
+            <p class="text-yellow-300 text-center">Loading ALL upcoming contests...</p>
+          </div>
+        </div>
+
+        <!-- Last 3 Contest Standings -->
+        <div>
+          <div class="flex justify-between items-center mb-3">
+            <h3 class="text-xl font-bold text-blue-300">📊 Recent Contests Standings</h3>
+            <button onclick="loadLast3Contests()" class="refresh-btn text-xs px-3 py-1">
+              ↻ Refresh
+            </button>
+          </div>
+          <p class="text-gray-300 mb-4 text-sm">Showing ALL students for last 3 non-Div.1 contests:</p>
+          <div id="last3Contests">
+            <div class="loading-spinner" style="width: 30px; height: 30px; border-width: 3px;"></div>
+            <p class="text-center text-yellow-300">Loading ALL students contest standings...</p>
+          </div>
+        </div>
+      </div>
+
+      <!-- Feedback Form Section -->
+      <div id="feedback" class="segment fade-in">
+        <h2 class="segment-title">💌 Send Feedback & Suggestions</h2>
+        <p class="text-gray-300 mb-4 text-sm text-center">
+          Have suggestions for improving this tracker? Found a bug? Want new features?
+          Let us know! Your feedback will be saved and reviewed by the developer.
+        </p>
+        
+        <form id="feedbackForm" class="max-w-2xl mx-auto">
+          <div class="grid grid-cols-1 md:grid-cols-2 gap-3 mb-3">
+            <div>
+              <label class="block text-gray-300 mb-1 text-xs" for="name">Name (Optional)</label>
+              <input type="text" id="name" name="name" 
+                     class="w-full p-2 rounded bg-gray-700 text-white border border-gray-600 focus:border-blue-500 focus:outline-none text-sm"
+                     placeholder="Your name">
+            </div>
+            <div>
+              <label class="block text-gray-300 mb-1 text-xs" for="email">Email (Optional)</label>
+              <input type="email" id="email" name="email" 
+                     class="w-full p-2 rounded bg-gray-700 text-white border border-gray-600 focus:border-blue-500 focus:outline-none text-sm"
+                     placeholder="your.email@example.com">
+            </div>
+          </div>
+          
+          <div class="mb-3">
+            <label class="block text-gray-300 mb-1 text-xs" for="message">Your Message *</label>
+            <textarea id="message" name="message" rows="3" 
+                      class="w-full p-2 rounded bg-gray-700 text-white border border-gray-600 focus:border-blue-500 focus:outline-none text-sm"
+                      placeholder="Describe your suggestion, bug report, or feedback..."
+                      required></textarea>
+            <p class="text-gray-400 text-xs mt-1">Minimum 10 characters required</p>
+          </div>
+          
+          <div class="flex justify-center">
+            <button type="submit" 
+                    class="bg-gradient-to-r from-pink-600 to-rose-600 hover:from-pink-700 hover:to-rose-700 text-white font-bold py-2 px-6 rounded flex items-center gap-2 text-sm">
+              <span>📤 Send Feedback</span>
+            </button>
+          </div>
+          
+          <div id="feedbackMessage" class="mt-3 text-center hidden"></div>
+        </form>
+        
+        <div class="mt-4 text-center text-gray-400 text-xs">
+          <p>📧 Feedback is saved locally and can be reviewed by developer</p>
+          <p class="mt-1">Thank you for helping improve the PUC Student Tracker! 🚀</p>
         </div>
       </div>
 
@@ -122,63 +660,21 @@
   </div>
 
   <!-- Footer -->
-  <footer class="bg-gray-800 text-gray-300 text-center p-4 mt-auto">
-    Developed by <a href="https://www.linkedin.com/in/tridib-deb-407048297" target="_blank" class="text-blue-400 hover:underline">Tridib Deb</a>
+  <footer class="bg-gray-800 text-gray-300 text-center p-3 mt-auto">
+    <div class="flex flex-col md:flex-row justify-between items-center max-w-6xl mx-auto text-xs">
+      <div class="mb-1 md:mb-0">
+        Developed by <a href="https://www.linkedin.com/in/tridib-deb-407048297" target="_blank" class="text-blue-400 hover:underline">Tridib Deb</a>
+      </div>
+      <div>
+        <span id="footerBDTime" class="text-yellow-300">Bangladesh Time: Loading...</span>
+      </div>
+      <div class="mt-1 md:mt-0">
+        <a href="#feedback" onclick="scrollToSection('feedback')" class="text-pink-400 hover:underline">💌 Send Feedback</a>
+      </div>
+    </div>
   </footer>
 
   <script src="script.js"></script>
-
-  <script>
-    let currentSort = 'solvedToday';
-
-    function renderLeaderboard(students) {
-      const container = document.getElementById('leaderboard');
-      if (!students || students.length === 0) {
-        container.innerHTML = '<p class="text-center text-yellow-300">No data available.</p>';
-        return;
-      }
-
-      const table = document.createElement('table');
-      table.className = 'min-w-full bg-gray-800 rounded-lg overflow-hidden text-sm';
-
-      const thead = document.createElement('thead');
-      thead.innerHTML = `
-        <tr class="bg-gray-700">
-          <th class="p-2 text-left">#</th>
-          <th class="p-2 text-left">Handle</th>
-          <th class="p-2 text-left w-[180px]">Solved Today</th>
-          <th class="p-2 text-left">Rating</th>
-          <th class="p-2 text-left">Max Rating</th>
-          <th class="p-2 text-left">Streak</th>
-        </tr>
-      `;
-      table.appendChild(thead);
-
-      const tbody = document.createElement('tbody');
-      students.forEach(s => {
-        const tr = document.createElement('tr');
-        tr.className = 'border-b border-gray-700 hover:bg-gray-700';
-        tr.innerHTML = `
-          <td class="p-2">${s.position}${s.medal ? ' ' + s.medal : ''}</td>
-          <td class="p-2">${s.handle}</td>
-          <td class="p-2 w-[180px]">${s.solvedToday}</td>
-          <td class="p-2">${s.rating}</td>
-          <td class="p-2">${s.maxRating}</td>
-          <td class="p-2">${s.streak}</td>
-        `;
-        tbody.appendChild(tr);
-      });
-
-      table.appendChild(tbody);
-      container.innerHTML = '';
-      container.appendChild(table);
-    }
-
-    function scrollToSection(id) {
-      const el = document.getElementById(id);
-      if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
-    }
-  </script>
 
 </body>
 </html>
