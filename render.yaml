@@ -1,0 +1,14 @@
+services:
+  - type: web
+    name: cf-student-tracker
+    env: node
+    plan: free
+    buildCommand: cd backend && npm install
+    startCommand: cd backend && npm start
+    envVars:
+      - key: JUDGE0_API_KEY
+        scope: all
+      - key: CF_API_KEY
+        scope: all
+      - key: CF_SECRET
+        scope: all
