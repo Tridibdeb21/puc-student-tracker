@@ -8,26 +8,17 @@ const path = require("path");
 const app = express();
 app.use(express.json());
 app.use(cors());
-// Serve the frontend static files when deploying as a single service
 app.use(express.static(path.join(__dirname, '../frontend')));
 
 // -------------------- CACHE --------------------
 let CACHE = {};
-const CACHE_TTL = 5 * 60 * 1000; // 5 minutes
-let CACHE_TIME = 0;
-
-// -------------------- COMPILER CONFIG --------------------
-const JUDGE0_API_KEY = process.env.JUDGE0_API_KEY || "your_judge0_api_key_here";
-const JUDGE0_BASE_URL = "https://judge0-ce.p.rapidapi.com";
-const JUDGE0_HEADERS = {
-    "X-RapidAPI-Key": JUDGE0_API_KEY,
-    "X-RapidAPI-Host": "judge0-ce.p.rapidapi.com",
-    "Content-Type": "application/json"
-};
+const CACHE_TTL = 30 * 60 * 1000; // 30 minutes (extended for better performance)
+const STUDENT_DATA_PROMISES = new Map();
 
 // -------------------- PROBLEMS DATA --------------------
 let dailyProblemCache = null;
 let dailyProblemDate = null;
+let STUDENTS_FILE_MTIME = 0;
 
 // -------------------- HELPERS --------------------
 function sleep(ms) {
@@ -94,12 +85,47 @@ function getCurrentBDTime() {
 
 function getStudents() {
     try {
-        const raw = fs.readFileSync("students.json", "utf-8");
+        const studentsPath = path.join(__dirname, 'students.json');
+        const stat = fs.statSync(studentsPath);
+        if (stat.mtimeMs !== STUDENTS_FILE_MTIME) {
+            STUDENTS_FILE_MTIME = stat.mtimeMs;
+            CACHE = {};
+            console.log('students.json changed, clearing cached student data');
+        }
+
+        const raw = fs.readFileSync(studentsPath, "utf-8");
         const data = JSON.parse(raw);
         return data.students || [];
     } catch (error) {
         console.error("Error reading students.json:", error);
         return [];
+    }
+}
+
+const USER_CACHE_FILE = path.join(__dirname, 'user_cache.json');
+
+function loadUserCache(map) {
+    try {
+        if (fs.existsSync(USER_CACHE_FILE)) {
+            const raw = fs.readFileSync(USER_CACHE_FILE, 'utf8');
+            const obj = JSON.parse(raw || '{}');
+            for (const k of Object.keys(obj)) {
+                try { map.set(k.toLowerCase(), obj[k]); } catch(e) { map.set(k, obj[k]); }
+            }
+            console.log(`Loaded ${map.size} users from user_cache.json`);
+        }
+    } catch (e) {
+        console.warn('Failed to load user cache:', e.message);
+    }
+}
+
+function saveUserCache(map) {
+    try {
+        const obj = {};
+        for (const [k, v] of map.entries()) obj[k] = v;
+        fs.writeFileSync(USER_CACHE_FILE, JSON.stringify(obj, null, 2), 'utf8');
+    } catch (e) {
+        console.warn('Failed to save user cache:', e.message);
     }
 }
 
@@ -266,140 +292,167 @@ async function fetchStudentData(dayOffset = 0) {
     }
 
     let failedHandles = [];
-    
-    // Process students one by one to avoid rate limiting
-    for (let i = 0; i < students.length; i++) {
-        const handle = students[i];
-        let retries = 3;
-        let success = false;
-        
-        while (retries > 0 && !success) {
+    const concurrency = parseInt(process.env.STUDENT_FETCH_CONCURRENCY) || 6;
+    // Pre-fetch user.info for all students in batches to reduce number of API calls
+    const userInfoMap = new Map();
+    async function fetchAllUserInfos() {
+        // Try loading existing cache first to avoid unnecessary API calls
+        loadUserCache(userInfoMap);
+        const batchSize = 100; // Codeforces supports multiple handles in one call
+        for (let i = 0; i < students.length; i += batchSize) {
+            const batch = students.slice(i, i + batchSize);
             try {
-                console.log(`Fetching ${handle} (${i+1}/${students.length}), retries left: ${retries}`);
-                
-                const [userRes, subRes] = await Promise.all([
-                    fetch(`https://codeforces.com/api/user.info?handles=${handle}`, {
-                        timeout: 15000
-                    }).then(r => {
-                        if (!r.ok) throw new Error(`HTTP ${r.status}`);
-                        return r.json();
-                    }),
-                    fetch(`https://codeforces.com/api/user.status?handle=${handle}&count=1000`, {
-                        timeout: 20000
-                    }).then(r => {
-                        if (!r.ok) throw new Error(`HTTP ${r.status}`);
-                        return r.json();
-                    })
-                ]);
+                console.log(`Fetching user.info for batch ${i}-${i + batch.length - 1}`);
+                const q = batch.join(';');
+                const infoRes = await fetch(`https://codeforces.com/api/user.info?handles=${encodeURIComponent(q)}`, {
+                    timeout: 15000
+                }).then(r => {
+                    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+                    return r.json();
+                });
 
-                if (userRes.status !== "OK") {
-                    throw new Error(`User API failed: ${userRes.comment || 'Unknown error'}`);
+                if (infoRes.status === 'OK' && Array.isArray(infoRes.result)) {
+                    infoRes.result.forEach(u => {
+                        try { userInfoMap.set(String(u.handle).toLowerCase(), u); } catch(e) { userInfoMap.set(u.handle, u); }
+                    });
+                    // persist updated cache after each successful batch
+                    saveUserCache(userInfoMap);
+                } else {
+                    console.warn('user.info batch returned non-OK status or empty result');
                 }
-                
+            } catch (e) {
+                console.error('Error fetching user.info batch:', e.message || e);
+            }
+            // small pause to be polite with API
+            await sleep(200);
+        }
+    }
+
+    // start fetching user infos (do not await here, allow overlap with submission fetches)
+    const userInfoPromise = fetchAllUserInfos();
+    let nextIndex = 0;
+
+    async function processStudent(handle, index) {
+        let retries = 3;
+        let backoffMs = 500; // Start with 500ms, exponential for rate-limit errors
+
+        while (retries > 0) {
+            try {
+                console.log(`Fetching submissions for ${handle} (${index + 1}/${students.length}), retries left: ${retries}`);
+
+                // Wait for user info fetch to finish for this handle if not already available
+                let u = userInfoMap.get(String(handle).toLowerCase());
+                if (!u) {
+                    // allow background fetch to proceed a short time
+                    try {
+                        await Promise.race([userInfoPromise, sleep(200)]);
+                        u = userInfoMap.get(String(handle).toLowerCase());
+                    } catch (e) {
+                        // ignore
+                    }
+                }
+
+                const subRes = await fetch(`https://codeforces.com/api/user.status?handle=${handle}&count=1000`, {
+                    timeout: 20000
+                }).then(r => {
+                    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+                    return r.json();
+                });
+
                 if (subRes.status !== "OK") {
                     throw new Error(`Submissions API failed: ${subRes.comment || 'Unknown error'}`);
                 }
 
-                const u = userRes.result[0];
+                if (!u) {
+                    // Try a direct per-handle fetch as a fallback (ensures rating is available)
+                    try {
+                        const directUserRes = await fetch(`https://codeforces.com/api/user.info?handles=${encodeURIComponent(handle)}`, { timeout: 10000 }).then(r => {
+                            if (!r.ok) throw new Error(`HTTP ${r.status}`);
+                            return r.json();
+                        });
+                        if (directUserRes && directUserRes.status === 'OK' && Array.isArray(directUserRes.result) && directUserRes.result[0]) {
+                            u = directUserRes.result[0];
+                            try { userInfoMap.set(String(u.handle).toLowerCase(), u); saveUserCache(userInfoMap); } catch(e) { /* ignore */ }
+                        }
+                    } catch (e) {
+                        // ignore direct fetch errors, will fallback to minimal object
+                        console.warn(`Direct user.info fetch failed for ${handle}: ${e.message}`);
+                    }
+                }
+
+                if (!u) {
+                    // fallback if user.info still wasn't fetched: create minimal user object
+                    u = { handle, rating: 0, maxRating: 0, rank: '-' };
+                }
+
                 const subs = subRes.result || [];
 
-                // Track unique problems solved BEFORE target date
-                const solvedProblems = new Set();
-                const beforeSubs = subs.filter(s => {
-                    if (!s || s.verdict !== "OK") return false;
-                    const submissionDate = getBDDate(s.creationTimeSeconds);
-                    return submissionDate < targetDateStr;
-                });
-                
-                beforeSubs.forEach(s => {
-                    if (s.problem) {
-                        const key = `${s.problem.contestId}-${s.problem.index}`;
-                        solvedProblems.add(key);
+                // Determine first-time solves by finding the earliest OK submission per problem
+                const solvedSubs = subs.filter(s => s && s.verdict === "OK");
+                const problemFirstSolveTs = new Map();
+
+                for (const s of solvedSubs) {
+                    if (!s.problem) continue;
+                    const key = `${s.problem.contestId}-${s.problem.index}`;
+                    const ts = s.creationTimeSeconds;
+                    if (!problemFirstSolveTs.has(key) || ts < problemFirstSolveTs.get(key)) {
+                        problemFirstSolveTs.set(key, ts);
                     }
-                });
+                }
 
-                // Target day submissions
-                const targetSubs = subs.filter(s => {
-                    if (!s || s.verdict !== "OK") return false;
-                    const submissionDate = getBDDate(s.creationTimeSeconds);
-                    return submissionDate === targetDateStr;
-                });
-
-                // Keep only first-time solves (unique)
                 const todayProblems = [];
-                const seenToday = new Set();
-                
-                for (let s of targetSubs) {
-                    if (s.problem) {
-                        const key = `${s.problem.contestId}-${s.problem.index}`;
-                        if (!seenToday.has(key)) {
-                            if (!solvedProblems.has(key)) {
-                                todayProblems.push({
-                                    name: s.problem.name || "Unknown",
-                                    rating: s.problem.rating || "-",
-                                    contestId: s.problem.contestId,
-                                    index: s.problem.index,
-                                    tags: s.problem.tags || []
-                                });
-                                solvedProblems.add(key);
-                            }
-                            seenToday.add(key);
-                        }
+                for (const [key, ts] of problemFirstSolveTs.entries()) {
+                    const firstSolveDate = getBDDate(ts);
+                    if (firstSolveDate === targetDateStr) {
+                        // find a submission to extract problem metadata
+                        const s = solvedSubs.find(x => x.problem && `${x.problem.contestId}-${x.problem.index}` === key && x.creationTimeSeconds === ts) ||
+                                  solvedSubs.find(x => x.problem && `${x.problem.contestId}-${x.problem.index}` === key);
+                        const p = s && s.problem ? s.problem : { name: 'Unknown', rating: '-', contestId: key.split('-')[0], index: key.split('-')[1], tags: [] };
+                        todayProblems.push({
+                            name: p.name || 'Unknown',
+                            rating: p.rating || '-',
+                            contestId: p.contestId,
+                            index: p.index,
+                            tags: p.tags || []
+                        });
                     }
                 }
 
                 const solvedToday = todayProblems.length;
 
-                // Difficulty count
                 const difficultyCount = { easy: 0, med1: 0, med2: 0, hard: 0 };
-                for (let p of todayProblems) {
-                    if (p.rating === "-") continue;
-                    const rating = parseInt(p.rating);
-                    if (!isNaN(rating)) {
-                        if (rating < 1200) difficultyCount.easy++;
-                        else if (rating < 1400) difficultyCount.med1++;
-                        else if (rating < 1600) difficultyCount.med2++;
-                        else difficultyCount.hard++;
-                    }
+                for (const problem of todayProblems) {
+                    if (problem.rating === "-") continue;
+                    const rating = parseInt(problem.rating);
+                    if (Number.isNaN(rating)) continue;
+                    if (rating < 1200) difficultyCount.easy++;
+                    else if (rating < 1400) difficultyCount.med1++;
+                    else if (rating < 1600) difficultyCount.med2++;
+                    else difficultyCount.hard++;
                 }
 
-                // Calculate streak with unique problems only
-                const solvedSubs = subs.filter(s => s.verdict === "OK");
                 const streak = calculateStreak(solvedSubs, targetDateStr, dayOffset);
 
-                // FIXED: Weekly solves with proper initialization
-                const weeklySolves = {};
+                const weeklySolves = Object.fromEntries(weeklyDates.map(date => [date, 0]));
                 const weeklyTagCount = {};
-                
-                // Initialize all weekly dates to 0
-                weeklyDates.forEach(date => {
-                    weeklySolves[date] = 0;
-                });
-                
-                // Track first solve dates for the entire submission history
                 const problemFirstSolve = new Map();
                 const sortedSubs = [...solvedSubs].sort((a, b) => a.creationTimeSeconds - b.creationTimeSeconds);
-                
-                for (let s of sortedSubs) {
-                    if (s.problem) {
-                        const submissionDate = getBDDate(s.creationTimeSeconds);
-                        const problemKey = `${s.problem.contestId}-${s.problem.index}`;
-                        
-                        if (!problemFirstSolve.has(problemKey)) {
-                            problemFirstSolve.set(problemKey, submissionDate);
-                            
-                            // Only count if within our weekly range
-                            if (weeklyDates.includes(submissionDate)) {
-                                weeklySolves[submissionDate] = (weeklySolves[submissionDate] || 0) + 1;
-                                
-                                // Count tags for weekly tag winners
-                                for (let t of s.problem.tags || []) {
-                                    weeklyTagCount[t] = (weeklyTagCount[t] || 0) + 1;
-                                    if (!weeklyTagMap[t]) weeklyTagMap[t] = {};
-                                    weeklyTagMap[t][handle] = (weeklyTagMap[t][handle] || 0) + 1;
-                                }
-                            }
-                        }
+
+                for (const s of sortedSubs) {
+                    if (!s.problem) continue;
+                    const submissionDate = getBDDate(s.creationTimeSeconds);
+                    const problemKey = `${s.problem.contestId}-${s.problem.index}`;
+
+                    if (problemFirstSolve.has(problemKey)) continue;
+                    problemFirstSolve.set(problemKey, submissionDate);
+
+                    if (!weeklyDates.includes(submissionDate)) continue;
+
+                    weeklySolves[submissionDate] = (weeklySolves[submissionDate] || 0) + 1;
+                    for (const tag of s.problem.tags || []) {
+                        weeklyTagCount[tag] = (weeklyTagCount[tag] || 0) + 1;
+                        if (!weeklyTagMap[tag]) weeklyTagMap[tag] = {};
+                        weeklyTagMap[tag][handle] = (weeklyTagMap[tag][handle] || 0) + 1;
                     }
                 }
 
@@ -408,6 +461,7 @@ async function fetchStudentData(dayOffset = 0) {
                     rating: u.rating || 0,
                     maxRating: u.maxRating || u.rating || 0,
                     rank: u.rank || "-",
+                    titlePhoto: u.titlePhoto || u.avatar || null,
                     solvedToday,
                     todayProblems,
                     difficultyCount,
@@ -415,24 +469,22 @@ async function fetchStudentData(dayOffset = 0) {
                     weeklySolves,
                     weeklyTagCount
                 });
-                
-                success = true;
+
                 console.log(`✓ Successfully fetched ${handle}`);
-                
+                return;
             } catch (err) {
                 retries--;
                 console.error(`Error fetching ${handle} (${err.message}), retries left: ${retries}`);
-                
+
                 if (retries === 0) {
                     console.error(`Failed to fetch data for ${handle} after 3 retries`);
                     failedHandles.push(handle);
-                    
-                    // Still add placeholder for graph and standings
                     results.push({
-                        handle: handle,
+                        handle,
                         rating: 0,
                         maxRating: 0,
                         rank: "-",
+                        titlePhoto: null,
                         solvedToday: 0,
                         todayProblems: [],
                         difficultyCount: { easy: 0, med1: 0, med2: 0, hard: 0 },
@@ -440,64 +492,129 @@ async function fetchStudentData(dayOffset = 0) {
                         weeklySolves: Object.fromEntries(weeklyDates.map(d => [d, 0])),
                         weeklyTagCount: {}
                     });
-                } else {
-                    await sleep(2000); // Wait before retry
+                    return;
                 }
+
+                // Exponential backoff: 500ms, 1s, 2s (starts slower than before)
+                await sleep(backoffMs);
+                backoffMs = Math.min(backoffMs * 2, 3000); // Cap at 3s
             }
-        }
-        
-        // Delay between students to avoid rate limiting
-        if (i < students.length - 1) {
-            await sleep(2000);
         }
     }
 
-    // Weekly tag winners
-    const weeklyTagWinners = {};
-    for (let tag in weeklyTagMap) {
-        let max = 0, winner = null;
-        for (let h in weeklyTagMap[tag]) {
-            const cnt = weeklyTagMap[tag][h];
-            const rating = results.find(s => s.handle === h)?.rating || 0;
-            if (cnt > max || (cnt === max && rating > (results.find(s => s.handle === winner)?.rating || 0))) {
-                max = cnt;
-                winner = h;
-            }
-        }
-        if (winner) {
-            weeklyTagWinners[tag] = { winner, count: max };
+    async function worker() {
+        while (true) {
+            const index = nextIndex++;
+            if (index >= students.length) break;
+            await processStudent(students[index], index);
         }
     }
 
-    const weeklyWinner = getWeeklyWinner(results);
+    const workerCount = Math.min(concurrency, students.length);
+    await Promise.all(Array.from({ length: workerCount }, () => worker()));
 
-    // Sort results: solvedToday DESC, rating ASC
-    results.sort((a, b) => b.solvedToday - a.solvedToday || (a.rating - b.rating));
-    results.forEach((s, i) => {
-        s.position = i + 1;
-        s.medal = i === 0 ? "🥇" : i === 1 ? "🥈" : i === 2 ? "🥉" : "";
+    // Retry any remaining failed handles once after a short cooldown.
+    // This helps previous-day and today views recover from temporary 429/503
+    // responses without leaving students marked as failed in the UI.
+    if (failedHandles.length > 0) {
+        const retryHandles = [...new Set(failedHandles)];
+        const retryIndexByHandle = new Map(students.map((h, idx) => [h, idx]));
+        failedHandles = [];
+        await sleep(2000);
+
+        for (const handle of retryHandles) {
+            const index = retryIndexByHandle.get(handle);
+            if (index === undefined) {
+                failedHandles.push(handle);
+                continue;
+            }
+            await processStudent(handle, index);
+        }
+
+        // Keep only the latest record for each handle so a successful retry
+        // replaces the earlier failed placeholder row.
+        const deduped = new Map();
+        for (const item of results) {
+            deduped.set(String(item.handle).toLowerCase(), item);
+        }
+        results.length = 0;
+        results.push(...deduped.values());
+    }
+
+    results.sort((a, b) => {
+        if (b.solvedToday !== a.solvedToday) return b.solvedToday - a.solvedToday;
+        return (a.rating || 0) - (b.rating || 0);
     });
 
-    return { 
-        result: results, 
-        weeklyTagWinners, 
+    const weeklyTagWinners = {};
+    for (const tag of Object.keys(weeklyTagMap)) {
+        let winner = null;
+        let maxCount = -1;
+        let bestRating = -1;
+
+        for (const handle of Object.keys(weeklyTagMap[tag])) {
+            const count = weeklyTagMap[tag][handle];
+            const rating = results.find(s => s.handle === handle)?.rating || 0;
+
+            if (count > maxCount || (count === maxCount && rating > bestRating)) {
+                maxCount = count;
+                bestRating = rating;
+                winner = handle;
+            }
+        }
+
+        if (winner) {
+            weeklyTagWinners[tag] = { handle: winner, count: maxCount };
+        }
+    }
+
+    const rawWeeklyWinner = getWeeklyWinner(results);
+    let weeklyWinner = null;
+    if (rawWeeklyWinner && rawWeeklyWinner.handle) {
+        const s = results.find(x => x.handle === rawWeeklyWinner.handle || (x.handle && x.handle.toLowerCase() === rawWeeklyWinner.handle.toLowerCase()));
+        weeklyWinner = {
+            handle: rawWeeklyWinner.handle,
+            daysSolved: rawWeeklyWinner.daysSolved,
+            rating: s?.rating || 0,
+            maxRating: s?.maxRating || s?.rating || 0,
+            rank: s?.rank || "-",
+            titlePhoto: s?.titlePhoto || null
+        };
+    }
+
+    // If any students ended up with rating 0 due to submission fetch failures,
+    // overlay cached user info (if available) so the UI shows known ratings.
+    for (let s of results) {
+        try {
+            const cached = userInfoMap.get(String(s.handle).toLowerCase());
+            if (cached && cached.rating) {
+                s.rating = cached.rating;
+                s.maxRating = cached.maxRating || cached.rating;
+                s.rank = (s.rank && s.rank !== '-') ? s.rank : (cached.rank || s.rank);
+                s.titlePhoto = s.titlePhoto || cached.titlePhoto || cached.avatar || null;
+            }
+        } catch (e) {
+            // ignore any lookup errors
+        }
+    }
+
+    return {
+        result: results,
+        weeklyTagWinners,
         weeklyWinner,
         displayDate,
         currentBDTime,
         targetDate: targetDateStr,
         totalStudents: students.length,
-        fetchedStudents: results.length,
-        failedHandles: failedHandles
+        fetchedStudents: results.filter(s => s.rating !== 0 || s.solvedToday > 0 || s.weeklySolves).length,
+        failedHandles
     };
 }
-
 // FIXED: Contest standings with better error handling
 async function fetchContestStandings() {
     try {
         console.log("Fetching contest list...");
-        const cfRes = await fetch("https://codeforces.com/api/contest.list?gym=false", {
-            timeout: 10000
-        }).then(r => {
+        const cfRes = await fetch("https://codeforces.com/api/contest.list?gym=false").then(r => {
             if (!r.ok) throw new Error(`HTTP ${r.status}`);
             return r.json();
         });
@@ -527,7 +644,9 @@ async function fetchContestStandings() {
             console.log(`Fetching standings for contest: ${contest.name} (ID: ${contest.id})`);
             const result = [];
             
-            // Process students in smaller batches
+            // Optimized: Process students in batches of 2 with 1000ms delays
+            // This maintains ~2 req/sec (within Codeforces limits of 1-2 req/sec)
+            // For 20 students: ~10 seconds, for 50 students: ~25 seconds per contest
             const batchSize = 2;
             for (let i = 0; i < students.length; i += batchSize) {
                 const batch = students.slice(i, i + batchSize);
@@ -561,9 +680,9 @@ async function fetchContestStandings() {
                 const batchResults = await Promise.all(batchPromises);
                 result.push(...batchResults);
                 
-                // Delay between batches
+                // Stagger batches by 1000ms to maintain ~2 req/sec (respects Codeforces limit)
                 if (i + batchSize < students.length) {
-                    await sleep(1500);
+                    await sleep(1000);
                 }
             }
 
@@ -595,9 +714,47 @@ async function fetchContestStandings() {
     }
 }
 
+// Retry fetching user.info for given handles and save to cache
+app.post('/api/retry-handles', async (req, res) => {
+    try {
+        const handles = Array.isArray(req.body.handles) ? req.body.handles : [];
+        if (handles.length === 0) return res.json({ status: 'OK', comment: 'No handles provided', retried: [] });
+
+        const userInfoMap = new Map();
+        loadUserCache(userInfoMap);
+        const retried = [];
+        const failed = [];
+
+        for (const h of handles) {
+            try {
+                const r = await fetch(`https://codeforces.com/api/user.info?handles=${encodeURIComponent(h)}`, { timeout: 10000 });
+                if (!r.ok) throw new Error(`HTTP ${r.status}`);
+                const j = await r.json();
+                if (j && j.status === 'OK' && Array.isArray(j.result) && j.result[0]) {
+                    const u = j.result[0];
+                    userInfoMap.set(String(u.handle).toLowerCase(), u);
+                    retried.push(u.handle);
+                } else {
+                    failed.push(h);
+                }
+            } catch (e) {
+                console.error(`Retry failed for ${h}:`, e.message || e);
+                failed.push(h);
+            }
+            await sleep(250);
+        }
+
+        saveUserCache(userInfoMap);
+        return res.json({ status: 'OK', retried, failed });
+    } catch (err) {
+        console.error('Error in /api/retry-handles:', err);
+        return res.status(500).json({ status: 'FAILED', comment: err.message });
+    }
+});
+
 // -------------------- ROUTES --------------------
 app.get("/", (req, res) => {
-    res.sendFile(path.join(__dirname, '../frontend', 'index.html'));
+    res.sendFile(path.join(__dirname, '../frontend/index.html'));
 });
 
 app.get("/api/bd-time", (req, res) => {
@@ -628,18 +785,48 @@ app.get("/api/daily-problem", async (req, res) => {
 app.get("/api/students/today", async (req, res) => {
     try {
         const now = Date.now();
-        if (CACHE.today && now - CACHE_TIME < CACHE_TTL) {
-            const cachedData = { ...CACHE.today, currentBDTime: getCurrentBDTime() };
+        const cacheKey = "today";
+        const targetDateStr = getBDDateString(0);
+        const forceFresh = req.query.fresh === '1' || req.query.fresh === 'true';
+        if (!forceFresh && CACHE[cacheKey] && 
+            now - CACHE[cacheKey].cachedAt < CACHE_TTL && 
+            CACHE[cacheKey].targetDate === targetDateStr) {
+            const cachedData = { ...CACHE[cacheKey].data, currentBDTime: getCurrentBDTime() };
             return res.json(cachedData);
         }
 
+        if (STUDENT_DATA_PROMISES.has(cacheKey)) {
+            return res.json(await STUDENT_DATA_PROMISES.get(cacheKey));
+        }
+
         console.log("Fetching fresh data for today...");
-        const data = await fetchStudentData(0);
-        CACHE.today = { status: "OK", ...data };
-        CACHE_TIME = now;
-        
-        console.log(`Data fetched: ${data.fetchedStudents}/${data.totalStudents} students`);
-        res.json({ status: "OK", ...data });
+        const pending = (async () => {
+            const data = await fetchStudentData(0);
+            CACHE[cacheKey] = {
+                data: { status: "OK", ...data },
+                cachedAt: Date.now(),
+                targetDate: targetDateStr
+            };
+            return { status: "OK", ...data };
+        })();
+
+        STUDENT_DATA_PROMISES.set(cacheKey, pending);
+
+        try {
+            const response = await pending;
+            console.log(`Data fetched: ${response.fetchedStudents}/${response.totalStudents} students`);
+            res.json(response);
+        } catch (fetchErr) {
+            // If fresh fetch fails, return stale cache if available
+            if (CACHE[cacheKey]) {
+                console.warn("Fresh fetch failed, returning cached data:", fetchErr.message);
+                const cachedData = { ...CACHE[cacheKey].data, currentBDTime: getCurrentBDTime(), cached: true };
+                return res.json(cachedData);
+            }
+            throw fetchErr;
+        } finally {
+            STUDENT_DATA_PROMISES.delete(cacheKey);
+        }
     } catch (err) {
         console.error("Error in /api/students/today:", err);
         res.status(500).json({ 
@@ -658,16 +845,37 @@ app.get("/api/students/day/:dayOffset", async (req, res) => {
     try {
         const now = Date.now();
         const cacheKey = `day${dayOffset}`;
-        if (CACHE[cacheKey] && now - CACHE_TIME < CACHE_TTL) {
-            const cachedData = { ...CACHE[cacheKey], currentBDTime: getCurrentBDTime() };
+        const targetDateStr = getBDDateString(dayOffset);
+        if (CACHE[cacheKey] && 
+            now - CACHE[cacheKey].cachedAt < CACHE_TTL && 
+            CACHE[cacheKey].targetDate === targetDateStr) {
+            const cachedData = { ...CACHE[cacheKey].data, currentBDTime: getCurrentBDTime() };
             return res.json(cachedData);
         }
 
+        if (STUDENT_DATA_PROMISES.has(cacheKey)) {
+            return res.json(await STUDENT_DATA_PROMISES.get(cacheKey));
+        }
+
         console.log(`Fetching data for day offset ${dayOffset}...`);
-        const data = await fetchStudentData(dayOffset);
-        CACHE[cacheKey] = { status: "OK", ...data };
-        CACHE_TIME = now;
-        res.json({ status: "OK", ...data });
+        const pending = (async () => {
+            const data = await fetchStudentData(dayOffset);
+            CACHE[cacheKey] = {
+                data: { status: "OK", ...data },
+                cachedAt: Date.now(),
+                targetDate: targetDateStr
+            };
+            return { status: "OK", ...data };
+        })();
+
+        STUDENT_DATA_PROMISES.set(cacheKey, pending);
+
+        try {
+            const response = await pending;
+            res.json(response);
+        } finally {
+            STUDENT_DATA_PROMISES.delete(cacheKey);
+        }
     } catch (err) {
         console.error(`Error in /api/students/day/${dayOffset}:`, err);
         res.status(500).json({ 
@@ -717,7 +925,7 @@ app.get("/api/contests/upcoming", async (req, res) => {
                     startTime: start,
                     startTimestamp: startTS,
                     duration: `${durH}h ${durM}m`, 
-                    url: `https://codeforces.com/contest/${c.id}`, 
+                    url: `https://codeforces.com/contests/${c.id}`, 
                     isLive, 
                     isSoon,
                     timeUntilStart: startTS - now
@@ -742,205 +950,21 @@ app.get("/api/contests/upcoming", async (req, res) => {
 app.get("/api/contests/last-3-standings", async (req, res) => {
     try {
         const now = Date.now();
-        if (CACHE.contestStandings && now - CACHE_TIME < CACHE_TTL) {
-            return res.json({ status: "OK", ...CACHE.contestStandings });
+        const cacheKey = "contestStandings";
+        if (CACHE[cacheKey] && now - CACHE[cacheKey].cachedAt < CACHE_TTL) {
+            return res.json({ status: "OK", ...CACHE[cacheKey].data });
         }
 
         const data = await fetchContestStandings();
-        CACHE.contestStandings = data;
-        CACHE_TIME = now;
+        CACHE[cacheKey] = {
+            data: data,
+            cachedAt: Date.now()
+        };
         
         res.json({ status: "OK", ...data });
     } catch(err){
         console.error("Error in /api/contests/last-3-standings:", err);
         res.json({ status: "OK", contests: [] });
-    }
-});
-
-// -------------------- COMPILER ROUTES --------------------
-app.post("/api/compile", async (req, res) => {
-    try {
-        const { code, language_id, stdin, expected_output } = req.body;
-        
-        if (!code || !language_id) {
-            return res.status(400).json({
-                status: "FAILED",
-                error: "Code and language ID are required"
-            });
-        }
-        
-        // Prepare submission data for Judge0
-        const submissionData = {
-            source_code: Buffer.from(code).toString('base64'),
-            language_id: parseInt(language_id),
-            stdin: stdin ? Buffer.from(stdin).toString('base64') : "",
-            expected_output: expected_output ? Buffer.from(expected_output).toString('base64') : null,
-            redirect_stderr_to_stdout: true
-        };
-        
-        console.log(`Compiling code with language ID: ${language_id}`);
-        
-        // Create submission
-        const createResponse = await fetch(`${JUDGE0_BASE_URL}/submissions?base64_encoded=true&wait=true`, {
-            method: 'POST',
-            headers: JUDGE0_HEADERS,
-            body: JSON.stringify(submissionData)
-        });
-        
-        if (!createResponse.ok) {
-            throw new Error(`Judge0 API error: ${createResponse.status}`);
-        }
-        
-        const result = await createResponse.json();
-        
-        // Decode base64 fields
-        if (result.stdout) {
-            result.stdout = Buffer.from(result.stdout, 'base64').toString();
-        }
-        if (result.stderr) {
-            result.stderr = Buffer.from(result.stderr, 'base64').toString();
-        }
-        if (result.compile_output) {
-            result.compile_output = Buffer.from(result.compile_output, 'base64').toString();
-        }
-        if (result.message) {
-            result.message = Buffer.from(result.message, 'base64').toString();
-        }
-        
-        res.json({
-            status: "OK",
-            result: result
-        });
-        
-    } catch (error) {
-        console.error("Compilation error:", error);
-        res.status(500).json({
-            status: "FAILED",
-            error: error.message || "Compilation failed"
-        });
-    }
-});
-
-// Get available languages
-app.get("/api/compiler/languages", async (req, res) => {
-    try {
-        const response = await fetch(`${JUDGE0_BASE_URL}/languages`, {
-            headers: JUDGE0_HEADERS
-        });
-        
-        if (!response.ok) {
-            throw new Error(`Judge0 API error: ${response.status}`);
-        }
-        
-        const languages = await response.json();
-        
-        // Filter for popular languages
-        const popularLanguages = languages.filter(lang => 
-            [50, 54, 62, 63, 70, 71, 74].includes(lang.id)
-        ).map(lang => ({
-            id: lang.id,
-            name: lang.name
-        }));
-        
-        res.json({
-            status: "OK",
-            languages: popularLanguages
-        });
-        
-    } catch (error) {
-        console.error("Error fetching languages:", error);
-        res.json({
-            status: "OK",
-            languages: [
-                { id: 54, name: "C++ (GCC 9.2.0)" },
-                { id: 50, name: "C (GCC 9.2.0)" },
-                { id: 62, name: "Java (OpenJDK 13.0.1)" },
-                { id: 63, name: "JavaScript (Node.js 12.14.0)" },
-                { id: 71, name: "Python (3.8.1)" }
-            ]
-        });
-    }
-});
-
-// Feedback system
-app.post("/api/feedback", async (req, res) => {
-    try {
-        const { name, email, message } = req.body;
-        
-        if (!message || message.trim().length < 10) {
-            return res.status(400).json({ 
-                status: "FAILED", 
-                comment: "Message must be at least 10 characters long" 
-            });
-        }
-        
-        const feedbackDir = path.join(__dirname, 'feedback');
-        if (!fs.existsSync(feedbackDir)) {
-            fs.mkdirSync(feedbackDir, { recursive: true });
-        }
-        
-        const timestamp = new Date().toISOString();
-        const feedbackId = Date.now();
-        const feedbackData = {
-            id: feedbackId,
-            timestamp,
-            name: name || 'Anonymous',
-            email: email || 'No email',
-            message: message.trim(),
-            read: false
-        };
-        
-        const feedbackFile = path.join(feedbackDir, `feedback_${feedbackId}.json`);
-        fs.writeFileSync(feedbackFile, JSON.stringify(feedbackData, null, 2), 'utf8');
-        
-        const logFile = path.join(feedbackDir, 'all_feedback.log');
-        const logEntry = `[${timestamp}] ${name || 'Anonymous'} (${email || 'No email'}): ${message}\n---\n`;
-        fs.appendFileSync(logFile, logEntry, 'utf8');
-        
-        console.log(`✅ Feedback saved: ${feedbackFile}`);
-        
-        res.json({ 
-            status: "OK", 
-            comment: "Thank you for your feedback! It has been saved and will be reviewed by the developer.",
-            feedbackId
-        });
-    } catch (err) {
-        console.error("Error processing feedback:", err);
-        res.status(500).json({ 
-            status: "FAILED", 
-            comment: "Failed to save feedback. Please try again later." 
-        });
-    }
-});
-
-app.get("/api/feedback/view", (req, res) => {
-    try {
-        const feedbackDir = path.join(__dirname, 'feedback');
-        if (!fs.existsSync(feedbackDir)) {
-            return res.json({ status: "OK", feedback: [] });
-        }
-        
-        const files = fs.readdirSync(feedbackDir);
-        const feedbackList = [];
-        
-        files.forEach(file => {
-            if (file.endsWith('.json')) {
-                try {
-                    const content = fs.readFileSync(path.join(feedbackDir, file), 'utf8');
-                    const feedback = JSON.parse(content);
-                    feedbackList.push(feedback);
-                } catch (e) {
-                    console.error(`Error reading feedback file ${file}:`, e);
-                }
-            }
-        });
-        
-        feedbackList.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
-        
-        res.json({ status: "OK", feedback: feedbackList });
-    } catch (err) {
-        console.error("Error viewing feedback:", err);
-        res.status(500).json({ status: "FAILED", comment: "Failed to load feedback" });
     }
 });
 
@@ -958,31 +982,36 @@ app.get("/api/students/count", (req, res) => {
 });
 
 app.get("/api/status", (req, res) => {
+    const age = CACHE.today ? Date.now() - CACHE.today.cachedAt : null;
     res.json({
         status: "OK",
         serverTime: new Date().toISOString(),
         bdTime: getCurrentBDTime(),
-        cacheAge: Date.now() - CACHE_TIME,
-        cacheValid: CACHE.today ? "Yes" : "No",
-        compilerAvailable: JUDGE0_API_KEY !== "your_judge0_api_key_here"
+        cacheAge: age,
+        cacheValid: CACHE.today ? "Yes" : "No"
     });
+});
+
+// Clear server cache (force next /api/students/today to fetch fresh data)
+app.post('/api/clear-cache', (req, res) => {
+    try {
+        CACHE = {};
+        console.log('Cache cleared via /api/clear-cache');
+        return res.json({ status: 'OK', comment: 'Cache cleared' });
+    } catch (err) {
+        console.error('Error clearing cache:', err);
+        return res.status(500).json({ status: 'FAILED', comment: err.message });
+    }
+});
+
+// SPA fallback: serve index.html for non-API GET requests without using path-to-regexp patterns
+app.use((req, res, next) => {
+    if (req.method !== 'GET') return next();
+    if (req.path.startsWith('/api')) return next();
+    res.sendFile(path.join(__dirname, '../frontend/index.html'));
 });
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
     console.log(`✅ Backend running at http://localhost:${PORT}`);
-    console.log(`🌍 Bangladesh Time: ${getCurrentBDTime()}`);
-    
-    const students = getStudents();
-    console.log(`📊 Total students in students.json: ${students.length}`);
-    if (students.length > 0) {
-        console.log(`👥 Sample students: ${students.slice(0, 5).join(', ')}${students.length > 5 ? '...' : ''}`);
-    }
-    
-    if (JUDGE0_API_KEY === "your_judge0_api_key_here") {
-        console.log(`⚠️  Compiler API key not set. Get free API key from: https://rapidapi.com/judge0-official/api/judge0-ce`);
-        console.log(`⚠️  Then set JUDGE0_API_KEY in .env file`);
-    } else {
-        console.log(`✅ Online compiler enabled with Judge0 API`);
-    }
 });

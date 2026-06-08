@@ -1,5 +1,8 @@
-// Use same origin when frontend is served by the backend in production
-const API_BASE = window.location.origin;
+const API_BASE = window.location.port === "3000" 
+    ? "" // Use relative URLs when on localhost:3000
+    : window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1"
+    ? "http://localhost:3000" // For Live Server on other ports
+    : "https://puc-student-tracker.onrender.com"; // Production Render URL
 
 const cfColors = {
     newbie: "text-gray-400",
@@ -14,6 +17,19 @@ const cfColors = {
     legendary_grandmaster: "text-red-600"
 };
 
+// Generate a small SVG avatar with gradient background and initials
+function generateAvatarSvg(initials, seed=0, size=40){
+    const colors = ['#4F46E5','#06B6D4','#10B981','#F59E0B','#EF4444','#8B5CF6'];
+    const c1 = colors[seed % colors.length];
+    const c2 = colors[(seed+1) % colors.length];
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="0 0 ${size} ${size}" role="img" aria-label="${initials}">`+
+        `<defs><linearGradient id="g${seed}" x1="0" x2="1"><stop offset="0" stop-color="${c1}"/><stop offset="1" stop-color="${c2}"/></linearGradient></defs>`+
+        `<rect width="${size}" height="${size}" rx="8" fill="url(#g${seed})"/>`+
+        `<text x="50%" y="52%" dominant-baseline="middle" text-anchor="middle" font-family="Poppins, Arial" font-size="${Math.floor(size/2.5)}" fill="white" font-weight="700">${initials}</text>`+
+    `</svg>`;
+    return svg;
+}
+
 let currentSort = "solvedToday";
 let studentsData = [];
 let weeklyChartInstance = null;
@@ -23,7 +39,10 @@ let isLoading = false;
 let totalStudents = 0;
 let fetchedStudents = 0;
 let failedStudents = 0;
-let codeEditor = null;
+let hasLoadedStudents = false;
+let hasLoadedContests = false;
+let isLoadingContests = false;
+let leaderboardAutoRefreshTimer = null;
 
 // -------------------- NAVIGATION --------------------
 function scrollToSection(id){
@@ -38,6 +57,7 @@ async function updateBDTime() {
         if(data.status === "OK") {
             document.getElementById("bdTime").textContent = data.bdTime;
             document.getElementById("footerBDTime").textContent = `Bangladesh Time: ${data.bdTime}`;
+            const hdr = document.getElementById("headerBDTime"); if (hdr) hdr.textContent = data.bdTime;
         }
     } catch(err) {
         const now = Date.now();
@@ -59,6 +79,7 @@ async function updateBDTime() {
         
         document.getElementById("bdTime").textContent = timeString;
         document.getElementById("footerBDTime").textContent = `Bangladesh Time: ${timeString}`;
+        const hdr = document.getElementById("headerBDTime"); if (hdr) hdr.textContent = timeString;
     }
 }
 
@@ -68,388 +89,27 @@ function startBDTimeUpdater() {
     bdTimeInterval = setInterval(updateBDTime, 10000);
 }
 
-// -------------------- INITIALIZE CODE EDITOR --------------------
-function initializeCodeEditor() {
-    const editorElement = document.getElementById('codeEditor');
-    
-    // Default C++ code
-    const defaultCode = `#include <iostream>\nusing namespace std;\n\nint main() {\n    // Write your code here\n    cout << "Hello, PUC Student Tracker!" << endl;\n    \n    // Example: Read input\n    int n;\n    cin >> n;\n    cout << "You entered: " << n << endl;\n    \n    return 0;\n}`;
-    
-    editorElement.value = defaultCode;
-    
-    // Initialize CodeMirror
-    codeEditor = CodeMirror.fromTextArea(editorElement, {
-        lineNumbers: true,
-        mode: "text/x-c++src",
-        theme: "dracula",
-        indentUnit: 4,
-        indentWithTabs: false,
-        lineWrapping: false,
-        matchBrackets: true,
-        autoCloseBrackets: true,
-        extraKeys: {
-            "Tab": function(cm) {
-                cm.replaceSelection("    ", "end");
-            }
-        }
+// Theme toggle utilities
+function applyTheme(theme){
+    if(!theme) theme = localStorage.getItem('puc_theme') || 'dark';
+    document.documentElement.setAttribute('data-theme', theme);
+    localStorage.setItem('puc_theme', theme);
+    const btn = document.getElementById('themeToggle');
+    if(btn) btn.textContent = theme === 'dark' ? 'Switch to Light' : 'Switch to Dark';
+    if (weeklyChartInstance && studentsData && studentsData.length) {
+        drawWeeklyChart(studentsData);
+    }
+}
+
+function initThemeToggle(){
+    applyTheme();
+    const btn = document.getElementById('themeToggle');
+    if(!btn) return;
+    btn.addEventListener('click', ()=>{
+        const current = document.documentElement.getAttribute('data-theme') || 'dark';
+        const next = current === 'dark' ? 'light' : 'dark';
+        applyTheme(next);
     });
-    
-    codeEditor.setSize("100%", "400px");
-    
-    // Update editor mode when language changes
-    document.getElementById('languageSelect').addEventListener('change', function() {
-        updateEditorMode();
-    });
-    
-    updateEditorMode();
-    updateStatusPanel("statusCompiler", "💻 Online Compiler: ✅ Ready");
-}
-
-// Update editor mode based on selected language
-function updateEditorMode() {
-    const languageId = document.getElementById('languageSelect').value;
-    let mode = "text/x-c++src";
-    
-    switch(languageId) {
-        case "50": // C
-            mode = "text/x-csrc";
-            break;
-        case "62": // Java
-            mode = "text/x-java";
-            break;
-        case "63": // JavaScript
-            mode = "text/javascript";
-            break;
-        case "71": // Python
-            mode = "text/x-python";
-            break;
-        case "54": // C++
-        default:
-            mode = "text/x-c++src";
-    }
-    
-    codeEditor.setOption("mode", mode);
-}
-
-// Format code (basic indentation)
-function formatCode() {
-    const code = codeEditor.getValue();
-    let lines = code.split('\n');
-    let indentLevel = 0;
-    
-    lines = lines.map(line => {
-        const trimmed = line.trim();
-        
-        // Decrease indent for closing braces
-        if (trimmed.endsWith('}') || trimmed === '}') {
-            indentLevel = Math.max(0, indentLevel - 1);
-        }
-        
-        // Apply current indent
-        const indentedLine = '    '.repeat(indentLevel) + trimmed;
-        
-        // Increase indent for opening braces
-        if (trimmed.endsWith('{') || trimmed === '{') {
-            indentLevel++;
-        }
-        
-        return indentedLine;
-    });
-    
-    codeEditor.setValue(lines.join('\n'));
-    showEditorStatus("Code formatted", "success");
-}
-
-// Load sample code based on selected language
-function loadSampleCode() {
-    const languageId = document.getElementById('languageSelect').value;
-    let sampleCode = "";
-    
-    switch(languageId) {
-        case "50": // C
-            sampleCode = `#include <stdio.h>\n\nint main() {\n    printf("Hello, PUC!\\n");\n    \n    int a, b;\n    scanf("%d %d", &a, &b);\n    printf("Sum: %d\\n", a + b);\n    \n    return 0;\n}`;
-            break;
-        case "62": // Java
-            sampleCode = `import java.util.Scanner;\n\npublic class Main {\n    public static void main(String[] args) {\n        Scanner sc = new Scanner(System.in);\n        System.out.println("Hello, PUC!");\n        \n        int a = sc.nextInt();\n        int b = sc.nextInt();\n        System.out.println("Sum: " + (a + b));\n        \n        sc.close();\n    }\n}`;
-            break;
-        case "63": // JavaScript
-            sampleCode = `// JavaScript code runs in Node.js environment\nconsole.log("Hello, PUC!");\n\nconst readline = require('readline');\nconst rl = readline.createInterface({\n    input: process.stdin,\n    output: process.stdout\n});\n\nrl.question('', (input) => {\n    const [a, b] = input.split(' ').map(Number);\n    console.log(\`Sum: \${a + b}\`);\n    rl.close();\n});`;
-            break;
-        case "71": // Python
-            sampleCode = `# Python 3 code\nprint("Hello, PUC!")\n\n# Read two integers\nimport sys\ndata = sys.stdin.read().strip().split()\nif len(data) >= 2:\n    a, b = map(int, data[:2])\n    print(f"Sum: {a + b}")\nelse:\n    print("Please provide two integers as input")`;
-            break;
-        case "54": // C++
-        default:
-            sampleCode = `#include <iostream>\nusing namespace std;\n\nint main() {\n    cout << "Hello, PUC Student Tracker!" << endl;\n    \n    // Read two integers and print their sum\n    int a, b;\n    cin >> a >> b;\n    cout << "Sum: " << a + b << endl;\n    \n    // Example of array\n    int n = 5;\n    int arr[n] = {1, 2, 3, 4, 5};\n    cout << "Array elements: ";\n    for(int i = 0; i < n; i++) {\n        cout << arr[i] << " ";\n    }\n    cout << endl;\n    \n    return 0;\n}`;
-    }
-    
-    codeEditor.setValue(sampleCode);
-    showEditorStatus("Sample code loaded", "success");
-}
-
-// Reset editor to default code
-function resetEditor() {
-    loadSampleCode();
-    document.getElementById('codeInput').value = "";
-    document.getElementById('expectedOutput').value = "";
-    clearOutput();
-    showEditorStatus("Editor reset", "success");
-}
-
-// Show editor status
-function showEditorStatus(message, type = "info") {
-    const statusElement = document.getElementById('editorStatus');
-    statusElement.textContent = message;
-    
-    switch(type) {
-        case "success":
-            statusElement.className = "text-xs text-green-400";
-            break;
-        case "error":
-            statusElement.className = "text-xs text-red-400";
-            break;
-        case "warning":
-            statusElement.className = "text-xs text-yellow-400";
-            break;
-        default:
-            statusElement.className = "text-xs text-gray-400";
-    }
-    
-    // Clear status after 3 seconds
-    setTimeout(() => {
-        statusElement.textContent = "Ready";
-        statusElement.className = "text-xs text-gray-400";
-    }, 3000);
-}
-
-// Clear output container
-function clearOutput() {
-    const outputContainer = document.getElementById('outputContainer');
-    outputContainer.innerHTML = `
-        <div class="text-center text-gray-500 py-8">
-            <p>Output will appear here after compilation</p>
-            <p class="text-xs mt-2">Click "Compile & Run" to execute your code</p>
-        </div>
-    `;
-    outputContainer.className = "output-container";
-}
-
-// -------------------- COMPILE CODE --------------------
-async function compileCode() {
-    const code = codeEditor.getValue();
-    const languageId = document.getElementById('languageSelect').value;
-    const stdin = document.getElementById('codeInput').value;
-    const expectedOutput = document.getElementById('expectedOutput').value;
-    const compileBtn = document.getElementById('compileBtn');
-    const outputContainer = document.getElementById('outputContainer');
-    
-    if (!code.trim()) {
-        showEditorStatus("Please write some code first", "error");
-        return;
-    }
-    
-    // Update UI
-    compileBtn.disabled = true;
-    compileBtn.innerHTML = '⏳ Compiling...';
-    showEditorStatus("Compiling your code...", "info");
-    
-    outputContainer.innerHTML = `
-        <div class="text-center py-8">
-            <div class="loading-spinner" style="width: 30px; height: 30px; border-width: 3px; margin: 0 auto;"></div>
-            <p class="text-yellow-300 mt-2">Compiling your code...</p>
-            <p class="text-gray-400 text-xs mt-1">This may take a few seconds</p>
-        </div>
-    `;
-    outputContainer.className = "output-container";
-    
-    try {
-        const response = await fetch(`${API_BASE}/api/compile`, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json'
-            },
-            body: JSON.stringify({
-                code: code,
-                language_id: parseInt(languageId),
-                stdin: stdin,
-                expected_output: expectedOutput
-            })
-        });
-        
-        const data = await response.json();
-        
-        if (data.status === "OK") {
-            displayCompilationResult(data.result);
-            showEditorStatus("Compilation successful", "success");
-            updateStatusPanel("statusCompiler", "💻 Online Compiler: ✅ Success");
-        } else {
-            throw new Error(data.error || "Compilation failed");
-        }
-        
-    } catch (error) {
-        console.error("Compilation error:", error);
-        
-        outputContainer.innerHTML = `
-            <div class="p-4">
-                <h3 class="text-red-400 font-bold mb-2">❌ Compilation Error</h3>
-                <p class="text-gray-300">${error.message || "Failed to compile code"}</p>
-                <p class="text-gray-400 text-xs mt-2">Check your code syntax and try again.</p>
-                <p class="text-gray-400 text-xs mt-1">If this persists, the Judge0 API might be unavailable or rate-limited.</p>
-            </div>
-        `;
-        outputContainer.className = "output-container output-error";
-        showEditorStatus("Compilation failed", "error");
-        updateStatusPanel("statusCompiler", "💻 Online Compiler: ❌ Failed", "error");
-    } finally {
-        compileBtn.disabled = false;
-        compileBtn.innerHTML = '▶ Compile & Run';
-    }
-}
-
-// Display compilation result
-function displayCompilationResult(result) {
-    const outputContainer = document.getElementById('outputContainer');
-    let html = '';
-    
-    // Determine status
-    const statusId = result.status?.id;
-    let statusText = "";
-    let statusClass = "";
-    let statusIcon = "";
-    
-    switch(statusId) {
-        case 3: // Accepted
-            statusText = "✅ Accepted";
-            statusClass = "output-success";
-            statusIcon = "✅";
-            break;
-        case 4: // Wrong Answer
-            statusText = "❌ Wrong Answer";
-            statusClass = "output-error";
-            statusIcon = "❌";
-            break;
-        case 5: // Time Limit Exceeded
-            statusText = "⏱ Time Limit Exceeded";
-            statusClass = "output-warning";
-            statusIcon = "⏱";
-            break;
-        case 6: // Compilation Error
-            statusText = "🔧 Compilation Error";
-            statusClass = "output-error";
-            statusIcon = "🔧";
-            break;
-        case 7: // Runtime Error
-            statusText = "💥 Runtime Error";
-            statusClass = "output-error";
-            statusIcon = "💥";
-            break;
-        default:
-            statusText = "📊 Execution Result";
-            statusClass = "output-container";
-            statusIcon = "📊";
-    }
-    
-    html += `
-        <div class="mb-4">
-            <h3 class="font-bold text-lg mb-2">${statusIcon} ${statusText}</h3>
-            <div class="text-xs text-gray-400 mb-3">
-                Status ID: ${statusId} | Time: ${result.time || "N/A"}s | Memory: ${result.memory || "N/A"}KB
-            </div>
-        </div>
-    `;
-    
-    // Display stdout if available
-    if (result.stdout) {
-        html += `
-            <div class="mb-4">
-                <h4 class="text-green-400 font-bold mb-1">📤 Output:</h4>
-                <div class="bg-gray-900 p-3 rounded font-mono text-sm whitespace-pre-wrap break-words">
-                    ${result.stdout}
-                </div>
-            </div>
-        `;
-    }
-    
-    // Display stderr if available
-    if (result.stderr) {
-        html += `
-            <div class="mb-4">
-                <h4 class="text-red-400 font-bold mb-1">⚠️ Errors:</h4>
-                <div class="bg-gray-900 p-3 rounded font-mono text-sm whitespace-pre-wrap break-words text-red-300">
-                    ${result.stderr}
-                </div>
-            </div>
-        `;
-    }
-    
-    // Display compile output if available
-    if (result.compile_output) {
-        html += `
-            <div class="mb-4">
-                <h4 class="text-yellow-400 font-bold mb-1">🔧 Compilation Output:</h4>
-                <div class="bg-gray-900 p-3 rounded font-mono text-sm whitespace-pre-wrap break-words text-yellow-300">
-                    ${result.compile_output}
-                </div>
-            </div>
-        `;
-    }
-    
-    // Display message if available
-    if (result.message) {
-        html += `
-            <div class="mb-4">
-                <h4 class="text-blue-400 font-bold mb-1">💡 Message:</h4>
-                <div class="bg-gray-900 p-3 rounded font-mono text-sm whitespace-pre-wrap break-words text-blue-300">
-                    ${result.message}
-                </div>
-            </div>
-        `;
-    }
-    
-    // Display expected vs actual output comparison
-    if (result.expected_output && result.stdout) {
-        const expected = result.expected_output.trim();
-        const actual = result.stdout.trim();
-        const isCorrect = expected === actual;
-        
-        html += `
-            <div class="mb-4">
-                <h4 class="${isCorrect ? 'text-green-400' : 'text-red-400'} font-bold mb-1">
-                    ${isCorrect ? '✅ Test Passed' : '❌ Test Failed'}
-                </h4>
-                <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-                    <div>
-                        <h5 class="text-gray-300 text-sm mb-1">Expected Output:</h5>
-                        <div class="bg-gray-900 p-3 rounded font-mono text-sm whitespace-pre-wrap break-words">
-                            ${expected || "(empty)"}
-                        </div>
-                    </div>
-                    <div>
-                        <h5 class="text-gray-300 text-sm mb-1">Actual Output:</h5>
-                        <div class="bg-gray-900 p-3 rounded font-mono text-sm whitespace-pre-wrap break-words">
-                            ${actual || "(empty)"}
-                        </div>
-                    </div>
-                </div>
-            </div>
-        `;
-    }
-    
-    // Show input if provided
-    const input = document.getElementById('codeInput').value;
-    if (input.trim()) {
-        html += `
-            <div class="mt-4 pt-4 border-t border-gray-700">
-                <h4 class="text-gray-300 font-bold mb-1">📥 Input Provided:</h4>
-                <div class="bg-gray-900 p-3 rounded font-mono text-sm whitespace-pre-wrap break-words">
-                    ${input}
-                </div>
-            </div>
-        `;
-    }
-    
-    outputContainer.innerHTML = html;
-    outputContainer.className = `output-container ${statusClass}`;
 }
 
 // -------------------- LOAD STUDENT COUNT --------------------
@@ -488,7 +148,6 @@ function updateStatusPanel(field = null, message = null, type = "success") {
     const statusLoading = document.getElementById("statusLoading");
     const statusCache = document.getElementById("statusCache");
     const statusApi = document.getElementById("statusApi");
-    const statusCompiler = document.getElementById("statusCompiler");
     const statusGraph = document.getElementById("statusGraph");
     const statusContests = document.getElementById("statusContests");
     const statusDot = document.getElementById("statusDot");
@@ -564,44 +223,6 @@ function updateProgress(current, total, message = "") {
     }
 }
 
-// -------------------- LOAD DAILY PROBLEM --------------------
-async function loadDailyProblem() {
-    const container = document.getElementById("dailyProblemContent");
-    container.innerHTML = `<div class="loading-spinner" style="width: 30px; height: 30px; border-width: 3px;"></div><p class="text-yellow-300 text-sm">Loading today's problem...</p>`;
-    
-    try {
-        const response = await fetch(`${API_BASE}/api/daily-problem`);
-        const data = await response.json();
-        
-        if (data.status === "OK") {
-            const problem = data.problem;
-            const tags = problem.tags.map(tag => `<span class="bg-gray-700 px-2 py-1 rounded text-xs">${tag}</span>`).join(' ');
-            
-            container.innerHTML = `
-                <div class="bg-gray-800 p-4 rounded-lg">
-                    <h3 class="text-lg font-bold text-blue-300 mb-2">${problem.name}</h3>
-                    <div class="flex flex-col sm:flex-row justify-center items-center gap-3 mb-3">
-                        <span class="bg-green-600 px-3 py-1 rounded font-bold">Rating: ${problem.rating}</span>
-                        <a href="${problem.url}" target="_blank" 
-                           class="bg-blue-600 hover:bg-blue-700 px-4 py-2 rounded font-bold flex items-center gap-2 text-sm">
-                           🔗 Solve Problem
-                        </a>
-                    </div>
-                    <div class="flex flex-wrap gap-2 justify-center mb-3">
-                        ${tags}
-                    </div>
-                    <p class="text-gray-300 text-xs">Problem ID: ${problem.contestId}${problem.index}</p>
-                </div>
-            `;
-        } else {
-            container.innerHTML = `<p class="text-red-400 text-sm">Failed to load daily problem.</p>`;
-        }
-    } catch (error) {
-        console.error("Error loading daily problem:", error);
-        container.innerHTML = `<p class="text-red-400 text-sm">Error loading daily problem.</p>`;
-    }
-}
-
 // -------------------- LOAD STUDENTS --------------------
 async function loadStudents(sortBy=currentSort){
     if (isLoading) return;
@@ -637,13 +258,17 @@ async function loadStudents(sortBy=currentSort){
         
         updateProgress(0, totalStudents, "Connecting to server...");
         
-        const res = await fetch(`${API_BASE}/api/students/today`);
+        const fresh = sortBy === '__fresh__';
+        const endpoint = fresh ? `${API_BASE}/api/students/today?fresh=1` : `${API_BASE}/api/students/today`;
+        const res = await fetch(endpoint);
         const data = await res.json();
         if(data.status !== "OK") throw new Error("Failed to fetch: " + (data.comment || "Unknown error"));
 
         studentsData = data.result || [];
         fetchedStudents = studentsData.length;
         failedStudents = data.failedHandles?.length || 0;
+        // store failed handles for UI display/debugging
+        window.failedHandlesList = data.failedHandles || [];
         
         const weeklyTagWinners = data.weeklyTagWinners || {};
         const weeklyWinner = data.weeklyWinner;
@@ -685,23 +310,18 @@ async function loadStudents(sortBy=currentSort){
         });
 
         updateProgress(total, total, "Rendering leaderboard...");
-        renderWeeklyWinner(weeklyWinner);
+        renderWeeklyWinner(weeklyWinner, data.failedHandles || [], studentsData);
         renderLeaderboard(studentsData, "leaderboard");
         renderWeeklyTagWinners(weeklyTagWinners);
         drawWeeklyChart(studentsData);
         updateQuickStats();
+        hasLoadedStudents = true;
         
         // Update cache time
         window.lastCacheTime = Date.now();
         updateStatusPanel("statusLoading", `✅ ${fetched}/${total} students loaded`);
         updateStatusPanel("statusGraph", "📈 Weekly Graph: ✅ Loaded");
         
-        // Load contests in background
-        setTimeout(() => {
-            loadUpcomingContests();
-            loadLast3Contests();
-        }, 100);
-
     } catch(err){
         console.error(err);
         leaderboard.innerHTML = `
@@ -721,6 +341,27 @@ async function loadStudents(sortBy=currentSort){
         refreshBtn.disabled = false;
         refreshBtn.innerHTML = "↻ Refresh Leaderboard";
         updateStatusPanel();
+    }
+}
+
+async function ensureStudentsLoaded() {
+    if (!totalStudents) {
+        totalStudents = await loadStudentCount();
+    }
+
+    if (totalStudents > 0 && !hasLoadedStudents) {
+        await loadStudents();
+    }
+}
+
+async function loadContestsOnce() {
+    if (hasLoadedContests || isLoadingContests) return;
+    isLoadingContests = true;
+    try {
+        await Promise.all([loadUpcomingContests(), loadLast3Contests()]);
+        hasLoadedContests = true;
+    } finally {
+        isLoadingContests = false;
     }
 }
 
@@ -822,7 +463,7 @@ function forceRefresh() {
     window.lastCacheTime = 0;
     updateStatusPanel("statusCache", "🔄 Cache cleared");
     // Force reload
-    loadStudents();
+    loadStudents('__fresh__');
 }
 
 // -------------------- REFRESH WEEKLY CHART --------------------
@@ -834,25 +475,97 @@ function refreshWeeklyChart() {
 }
 
 // -------------------- WEEKLY WINNER --------------------
-function renderWeeklyWinner(weeklyWinnerData){
+function renderWeeklyWinner(weeklyWinnerData, failedHandles = [], students = []){
     const container = document.getElementById("weeklyWinner");
     if (weeklyWinnerData && weeklyWinnerData.handle) {
+        const initials = (weeklyWinnerData.handle || '').split(/[_\.\s-]+/).filter(Boolean).map(x=>x[0]).slice(0,2).join('').toUpperCase();
+        // Try to find avatar from loaded students data
+        const student = (studentsData || []).find(s => s.handle && s.handle.toLowerCase() === weeklyWinnerData.handle.toLowerCase());
+        const avatarHtml = student && (student.avatar || student.titlePhoto) ?
+            `<img src="${student.avatar || student.titlePhoto}" alt="${weeklyWinnerData.handle}" class="w-20 h-20 rounded-full object-cover border-4 border-white shadow-lg"/>`
+            : generateAvatarSvg(initials, (weeklyWinnerData.rating||0), 80);
+
         container.innerHTML = `
-            <div class="bg-gradient-to-r from-yellow-600 to-amber-600 p-4 rounded-lg text-center">
-                <span class="text-2xl">🏆 Weekly Winner:</span>
-                <span class="text-yellow-300 font-bold text-xl">${weeklyWinnerData.handle}</span>
-                <p class="text-sm mt-2">Solved ${weeklyWinnerData.daysSolved} days this week with unique problems</p>
-                <p class="text-xs text-gray-200 mt-1">(Need at least 5 days with unique solves to win)</p>
+            <div style="position:relative; overflow:visible;">
+                <div class="p-4 rounded-lg text-left bg-gradient-to-r from-yellow-400 to-amber-500 border-2 border-yellow-300 shadow-xl flex items-center gap-4">
+                    <div style="flex:0 0 auto">${avatarHtml}</div>
+                    <div style="flex:1"> 
+                        <div class="flex items-center gap-3">
+                            <div class="text-2xl font-extrabold text-slate-900">${weeklyWinnerData.handle}</div>
+                            <div class="text-sm px-3 py-1 rounded bg-white/10 text-white font-semibold">🏆 Weekly Winner</div>
+                        </div>
+                        <div class="mt-2 text-sm text-slate-900">Rating: <span class="font-bold">${weeklyWinnerData.rating || 0}</span> · Max: <span class="font-bold">${weeklyWinnerData.maxRating || 0}</span></div>
+                        <div class="mt-2 text-sm text-slate-900">Solved <span class="font-bold">${weeklyWinnerData.daysSolved}</span> days this week (unique solves)</div>
+                        <div class="mt-3 flex gap-2">
+                            <a href="https://codeforces.com/profile/${weeklyWinnerData.handle}" target="_blank" class="refresh-btn text-sm px-4 py-2">View Profile</a>
+                        </div>
+                    </div>
+                    <div style="flex:0 0 90px; text-align:center">
+                        <svg width="64" height="64" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                            <path d="M12 2l1.176 3.618L17 7.236l-3 2.184L14.352 15 12 13.236 9.648 15 10 9.42 7 7.236l3.824-1.618L12 2z" fill="#fff" opacity="0.95"/>
+                        </svg>
+                        <div class="text-xs text-slate-900 font-bold mt-1">Top Performer</div>
+                    </div>
+                </div>
+                <div class="confetti-container" aria-hidden="true" style="position:absolute; left:0; right:0; top:-18px; height:0; pointer-events:none; overflow:visible">
+                    <style>
+                        .confetti-container span{ position:absolute; width:8px; height:12px; opacity:0.95; transform-origin:center; animation:fall 1800ms linear forwards; }
+                        @keyframes fall{ 0%{ transform: translateY(-10px) rotate(0deg); opacity:1 } 100%{ transform: translateY(120px) rotate(360deg); opacity:0 } }
+                    </style>
+                    ${Array.from({length:12}).map((_,i)=>{
+                        const left = Math.round((i/12)*100);
+                        const colors = ['#ef4444','#f59e0b','#10b981','#06b6d4','#8b5cf6','#f472b6'];
+                        const c = colors[i % colors.length];
+                        const delay = Math.floor(Math.random()*400);
+                        return `<span style="left:${left}%; top:0; background:${c}; animation-delay:${delay}ms"></span>`;
+                    }).join('')}
+                </div>
             </div>
         `;
     } else {
+        // Provide clear reasons and diagnostics when no winner
+        const reason = failedHandles && failedHandles.length ?
+            `Could not determine winner due to ${failedHandles.length} failed handle fetches.` :
+            `No student met the minimum requirement (5 days with unique solves).`;
+
+        // Optionally show top candidates (who solved most days) for transparency
+        let candidatesHtml = '';
+        try {
+            const ranked = (students || []).map(s=>({ handle: s.handle, totalDays: Object.values(s.weeklySolves||{}).filter(v=>v>0).length, rating: s.rating||0 }))
+                .sort((a,b)=> b.totalDays - a.totalDays || b.rating - a.rating)
+                .slice(0,5);
+
+            if (ranked.length) {
+                candidatesHtml = `<div class="mt-3 text-xs text-gray-300">Top candidates this week:<ul class="mt-2 text-left inline-block">` +
+                    ranked.map(r=>`<li>${r.handle} — ${r.totalDays} days</li>`).join('') + `</ul></div>`;
+            }
+        } catch(e){ candidatesHtml = ''; }
+
         container.innerHTML = `
             <div class="bg-gray-700 p-4 rounded-lg text-center">
-                <span class="text-lg">🏆 No weekly winner this week</span>
-                <p class="text-sm text-gray-300 mt-2">(Need at least 5 days with unique solves)</p>
+                <div class="text-lg">🏆 No weekly winner this week</div>
+                <p class="text-sm text-gray-300 mt-2">${reason}</p>
+                ${failedHandles && failedHandles.length ? `<p class="text-xs text-red-400 mt-2">Failed handles: ${failedHandles.join(', ')}</p>` : ''}
+                ${candidatesHtml}
             </div>
         `;
     }
+}
+
+function highlightHandle(handle){
+    // Scroll to leaderboard and temporarily highlight the row
+    scrollToSection('leaderboard');
+    setTimeout(()=>{
+        const links = Array.from(document.querySelectorAll('#leaderboard a'));
+        const target = links.find(a=>a.textContent.trim()===handle);
+        if(target){
+            const row = target.closest('tr');
+            row.classList.add('contest-highlight');
+            setTimeout(()=> row.classList.remove('contest-highlight'), 4000);
+        } else {
+            alert('Handle not visible in current leaderboard view. Try refreshing or searching.');
+        }
+    }, 400);
 }
 
 // -------------------- LEADERBOARD --------------------
@@ -871,23 +584,26 @@ function renderLeaderboard(data, containerId){
     
     const total = data.length;
     let html = `
-    <div class="mb-3 bg-gray-800 p-2 rounded">
+    <div class="mb-3 bg-gradient-to-r from-black/30 to-transparent p-3 rounded-lg">
         <div class="flex justify-between items-center">
-            <span class="text-sm text-gray-300">Showing <span class="text-yellow-300">${total}</span> students</span>
-            <span class="text-xs text-gray-400">Sorted by: ${currentSort === 'solvedToday' ? 'Solved Today' : 'Rating'}</span>
+            <div>
+                <div class="text-sm text-gray-300">Showing <span class="text-yellow-300">${total}</span> students</div>
+                <div class="text-xs text-gray-400">Sorted by: ${currentSort === 'solvedToday' ? 'Solved Today' : 'Rating'}</div>
+            </div>
+            <div class="text-xs text-gray-400">Refresh to update live data</div>
         </div>
     </div>
-    <table class="w-full table-fixed bg-gray-800 rounded-lg text-xs">
-    <thead class="bg-gray-700 sticky top-0">
-    <tr>
-        <th class="w-8 p-2">#</th>
-        <th class="p-2">Handle</th>
-        <th class="p-2 w-16">Rating</th>
-        <th class="p-2 w-20">Rank</th>
-        <th class="p-2 w-16">Streak*</th>
-        <th class="p-2 w-20">Solved</th>
-        <th class="p-2 w-28">Difficulty</th>
-        <th class="p-2">Problems Solved</th>
+    <div class="overflow-hidden rounded-lg border border-transparent">
+    <table class="w-full text-sm bg-gradient-to-b from-black/20 to-transparent">
+    <thead class="bg-black/30 backdrop-blur sticky top-0">
+    <tr class="text-left text-gray-300 text-xs tracking-wider">
+        <th class="p-3 w-12">#</th>
+        <th class="p-3">Student</th>
+        <th class="p-3 w-24">Rating</th>
+        <th class="p-3 w-28">Rank</th>
+        <th class="p-3 w-24">Streak</th>
+        <th class="p-3 w-20">Solved</th>
+        <th class="p-3 w-36">Problems</th>
     </tr>
     </thead><tbody>`;
 
@@ -895,46 +611,65 @@ function renderLeaderboard(data, containerId){
         const colorClass=cfColors[s.rank?.replace(/\s+/g,"_").toLowerCase()]||"text-white";
         let medal = s.medal || "";
 
-        // Show up to 3 problems
-        const maxProblems = 3;
-        let problemsHtml = s.todayProblems && s.todayProblems.length 
-            ? s.todayProblems.slice(0, maxProblems).map(p=>`
-                <a href="https://codeforces.com/problemset/problem/${p.contestId}/${p.index}" 
-                   target="_blank" 
-                   class="text-blue-400 hover:underline break-words block text-xs mb-1"
-                   title="${p.name} (${p.rating}) [${p.tags?.join(', ') || 'No tags'}]">
-                   ${p.name.substring(0, 30)}${p.name.length > 30 ? '...' : ''} (${p.rating})
-                </a>`).join("") 
-            : "<span class='text-gray-500 text-xs'>No solves today</span>";
-        
-        if (s.todayProblems && s.todayProblems.length > maxProblems) {
-            problemsHtml += `<span class="text-gray-400 text-xs block mt-1">+${s.todayProblems.length - maxProblems} more</span>`;
-        }
+        // Show all solved problems with visible tags.
+        let problemsHtml = s.todayProblems && s.todayProblems.length
+            ? `<div class="space-y-2 max-h-64 overflow-auto pr-1">${s.todayProblems.map(p => {
+                const tags = (p.tags && p.tags.length)
+                    ? p.tags.map(tag => `<span class="inline-flex items-center px-2 py-1 rounded-full bg-white/10 text-gray-200 border border-white/10 mr-1 mb-1">${tag}</span>`).join('')
+                    : `<span class="text-gray-500">No tags</span>`;
 
-        const diffHtml = `<div class="flex gap-1 flex-wrap justify-center">
+                return `
+                    <a href="https://codeforces.com/problemset/problem/${p.contestId}/${p.index}"
+                       target="_blank"
+                       rel="noopener noreferrer"
+                       class="block rounded-lg border border-white/10 bg-black/20 hover:bg-black/30 transition-colors p-2 text-xs">
+                        <div class="flex items-start justify-between gap-2">
+                            <div class="min-w-0">
+                                <div class="text-sky-300 font-semibold break-words">${p.name}</div>
+                                <div class="text-gray-400 mt-1">${p.contestId}${p.index} · ${p.rating}</div>
+                            </div>
+                            <div class="text-[10px] text-gray-500 whitespace-nowrap">open</div>
+                        </div>
+                        <div class="mt-2 flex flex-wrap gap-1">${tags}</div>
+                    </a>`;
+            }).join('')}</div>`
+            : "<span class='text-gray-500 text-xs'>No solves today</span>";
+
+        const diffHtml = `<div class="flex gap-1 flex-wrap items-center">
             ${s.difficultyCount?.easy?`<div class="w-4 h-4 bg-green-400 rounded-full text-xs flex items-center justify-center text-black" title="Easy: ${s.difficultyCount.easy}">${s.difficultyCount.easy}</div>`:""}
             ${s.difficultyCount?.med1?`<div class="w-4 h-4 bg-lime-400 rounded-full text-xs flex items-center justify-center text-black" title="Medium 1: ${s.difficultyCount.med1}">${s.difficultyCount.med1}</div>`:""}
             ${s.difficultyCount?.med2?`<div class="w-4 h-4 bg-orange-400 rounded-full text-xs flex items-center justify-center text-black" title="Medium 2: ${s.difficultyCount.med2}">${s.difficultyCount.med2}</div>`:""}
             ${s.difficultyCount?.hard?`<div class="w-4 h-4 bg-red-400 rounded-full text-xs flex items-center justify-center text-black" title="Hard: ${s.difficultyCount.hard}">${s.difficultyCount.hard}</div>`:""}
         </div>`;
-
-        html+=`<tr class="border-t border-gray-700 hover:bg-gray-700">
-            <td class="text-center p-2">${s.position} ${medal}</td>
-            <td class="p-2"><a href="https://codeforces.com/profile/${s.handle}" target="_blank" class="${colorClass} font-bold hover:underline text-sm">${s.handle}</a></td>
-            <td class="text-center p-2">${s.rating || 0}</td>
-            <td class="text-center p-2">${s.rank || "-"}</td>
-            <td class="text-center p-2 ${s.streak > 0 ? 'text-green-400 font-bold' : 'text-gray-400'}">${s.streak || 0} 🔥</td>
-            <td class="text-center font-bold text-lg p-2 ${s.solvedToday > 0 ? 'text-green-400' : 'text-gray-400'}">${s.solvedToday || 0}</td>
-            <td class="p-2">${diffHtml}</td>
-            <td class="break-words p-2">${problemsHtml}</td>
+        // avatar initials
+        const initials = (s.handle || '').split(/[_\.\s-]+/).filter(Boolean).map(x=>x[0]).slice(0,2).join('').toUpperCase();
+        const profileImage = s.titlePhoto || s.avatar || null;
+        const avatarMarkup = profileImage
+            ? `<img src="${profileImage}" alt="${s.handle}" class="w-10 h-10 rounded-full object-cover border-2 border-white/20 shadow-lg"/>`
+            : generateAvatarSvg(initials, i, 40);
+        html+=`<tr class="border-b border-gray-800 hover:bg-black/20">
+            <td class="p-3 font-semibold">${s.position} ${medal}</td>
+            <td class="p-3 flex items-center gap-3">
+                ${avatarMarkup}
+                <div>
+                    <a href="https://codeforces.com/profile/${s.handle}" target="_blank" class="${colorClass} font-semibold hover:underline">${s.handle}</a>
+                    <div class="text-xs text-gray-400">${s.maxRating ? 'Max: '+(s.maxRating||0) : ''}</div>
+                </div>
+            </td>
+            <td class="p-3 font-semibold">${s.rating || 0}</td>
+            <td class="p-3">${s.rank || "-"}</td>
+            <td class="p-3 ${s.streak > 0 ? 'text-green-400 font-bold' : 'text-gray-400'}">${s.streak || 0} 🔥</td>
+            <td class="p-3 font-bold ${s.solvedToday > 0 ? 'text-green-400' : 'text-gray-400'}">${s.solvedToday || 0}</td>
+            <td class="p-3">${problemsHtml}</td>
         </tr>`;
     });
 
-    html += `</tbody></table>
-    <div class="mt-3 bg-gray-800 p-3 rounded text-xs">
+    html += `</tbody></table></div>
+    <div class="mt-3 p-3 text-xs text-gray-300 bg-black/20 rounded">
         <p>* Streak counts days with <span class="text-green-400">unique problem solves only</span> (duplicates filtered)</p>
         <p>✅ Showing <span class="text-yellow-300">${data.length}</span> out of <span class="text-green-400">${totalStudents}</span> total students</p>
         ${failedStudents > 0 ? `<p class="text-red-400">⚠️ ${failedStudents} students failed to load (Codeforces API issue)</p>` : ''}
+        ${window.failedHandlesList && window.failedHandlesList.length ? `<div class="mt-2 text-xs text-gray-400">Failed handles: <span id="failedHandlesList">${window.failedHandlesList.join(', ')}</span> <button onclick="copyFailedHandles()" class="ml-2 px-2 py-1 text-xs rounded bg-gray-700">Copy</button></div>` : ''}
     </div>`;
     
     container.innerHTML=html;
@@ -1001,6 +736,15 @@ function filterByHandle(){
     }
 }
 
+function copyFailedHandles(){
+    const list = window.failedHandlesList || [];
+    if(list.length === 0) return;
+    const text = list.join(', ');
+    navigator.clipboard?.writeText(text).then(()=>{
+        alert('Failed handles copied to clipboard');
+    }).catch(()=>{ prompt('Failed handles:', text); });
+}
+
 function clearSearch() {
     document.getElementById("handleSearch").value = '';
     const containerId = currentDayOffset > 0 ? "previousLeaderboard" : "leaderboard";
@@ -1008,9 +752,15 @@ function clearSearch() {
 }
 
 // -------------------- WEEKLY CHART --------------------
-function drawWeeklyChart(data, selectedHandle=null){
+function drawWeeklyChart(data, selectedHandles=null){
     const ctx=document.getElementById('weeklyChart').getContext('2d');
     if(weeklyChartInstance) weeklyChartInstance.destroy();
+
+    const isLightTheme = document.documentElement.getAttribute('data-theme') === 'light';
+    const chartTextColor = isLightTheme ? '#0f172a' : '#ffffff';
+    const chartGridColor = isLightTheme ? 'rgba(15, 23, 42, 0.10)' : 'rgba(255, 255, 255, 0.10)';
+    const chartTooltipBg = isLightTheme ? 'rgba(255, 255, 255, 0.95)' : 'rgba(0, 0, 0, 0.80)';
+    const chartTooltipText = isLightTheme ? '#0f172a' : '#ffffff';
 
     if (!data || data.length === 0) {
         const container = document.querySelector(".chart-container");
@@ -1053,22 +803,30 @@ function drawWeeklyChart(data, selectedHandle=null){
 
     const datasets = [];
     
-    if (selectedHandle) {
-        // Show specific handle
-        const student = data.find(s => s.handle === selectedHandle);
-        if (student && student.weeklySolves) {
-            datasets.push({
-                label: student.handle,
-                data: labels.map(d => student.weeklySolves[d] || 0),
-                borderWidth: 3,
-                fill: false,
-                tension: 0.4,
-                borderColor: '#3B82F6',
-                backgroundColor: '#3B82F6',
-                pointRadius: 4,
-                pointHoverRadius: 6
-            });
-        }
+    // If selectedHandles is provided it may be a string (single) or array (multiple)
+    const handlesArray = (typeof selectedHandles === 'string') ? [selectedHandles] : (Array.isArray(selectedHandles) ? selectedHandles : null);
+    if (handlesArray && handlesArray.length > 0) {
+        // Show only selected handles
+        const colors = [
+            '#3B82F6', '#10B981', '#F59E0B', '#EF4444', '#8B5CF6', 
+            '#EC4899', '#06B6D4', '#84CC16', '#F97316', '#8B5CF6'
+        ];
+        handlesArray.slice(0, 10).forEach((h, index) => {
+            const student = data.find(s => s.handle === h);
+            if (student && student.weeklySolves) {
+                datasets.push({
+                    label: student.handle,
+                    data: labels.map(d => student.weeklySolves[d] || 0),
+                    borderWidth: 3,
+                    fill: false,
+                    tension: 0.4,
+                    borderColor: colors[index % colors.length],
+                    backgroundColor: colors[index % colors.length],
+                    pointRadius: 4,
+                    pointHoverRadius: 6
+                });
+            }
+        });
     } else {
         // Show top 10 students for better visualization
         const studentsWithData = data.filter(s => s.weeklySolves && Object.values(s.weeklySolves).some(v => v > 0));
@@ -1125,11 +883,11 @@ function drawWeeklyChart(data, selectedHandle=null){
             plugins: {
                 legend: {
                     labels: {
-                        color: 'white',
-                        font: { size: 11 },
+                        color: chartTextColor,
+                        font: { size: 12, weight: '600' },
                         usePointStyle: true,
                         boxWidth: 10,
-                        padding: 15
+                        padding: 14
                     },
                     position: 'top',
                     align: 'center',
@@ -1138,9 +896,9 @@ function drawWeeklyChart(data, selectedHandle=null){
                 tooltip: {
                     mode: 'index',
                     intersect: false,
-                    backgroundColor: 'rgba(0, 0, 0, 0.8)',
-                    titleColor: '#fff',
-                    bodyColor: '#fff',
+                    backgroundColor: chartTooltipBg,
+                    titleColor: chartTooltipText,
+                    bodyColor: chartTooltipText,
                     callbacks: {
                         title: function(tooltipItems) {
                             const index = tooltipItems[0].dataIndex;
@@ -1164,7 +922,7 @@ function drawWeeklyChart(data, selectedHandle=null){
                 title: {
                     display: true,
                     text: 'Weekly Progress (Unique Solves Only)',
-                    color: 'white',
+                    color: chartTextColor,
                     font: { size: 14, weight: 'bold' }
                 }
             },
@@ -1172,36 +930,36 @@ function drawWeeklyChart(data, selectedHandle=null){
                 y: {
                     beginAtZero: true,
                     ticks: { 
-                        color: 'white', 
+                        color: chartTextColor, 
                         stepSize: 1, 
                         font: { size: 11 },
                         precision: 0
                     },
                     grid: { 
-                        color: 'rgba(255, 255, 255, 0.1)',
+                        color: chartGridColor,
                         drawBorder: false
                     },
                     title: {
                         display: true,
                         text: 'Unique Problems Solved',
-                        color: 'white',
+                        color: chartTextColor,
                         font: { size: 12, weight: 'bold' }
                     }
                 },
                 x: {
                     ticks: { 
-                        color: 'white', 
+                        color: chartTextColor, 
                         maxRotation: 45, 
                         font: { size: 10 } 
                     },
                     grid: { 
-                        color: 'rgba(255, 255, 255, 0.1)',
+                        color: chartGridColor,
                         drawBorder: false
                     },
                     title: {
                         display: true,
                         text: 'Date (Bangladesh Time)',
-                        color: 'white',
+                        color: chartTextColor,
                         font: { size: 12, weight: 'bold' }
                     }
                 }
@@ -1258,6 +1016,43 @@ function selectWeeklyHandle(){
     drawWeeklyChart(studentsData, h);
 }
 
+function selectWeeklyHandles(){
+    // Create a modal with a multi-select for handles
+    const overlay = document.createElement('div');
+    overlay.id = 'multiSelectOverlay';
+    overlay.style = 'position:fixed;left:0;top:0;right:0;bottom:0;background:rgba(0,0,0,0.6);display:flex;align-items:center;justify-content:center;z-index:10000';
+
+    const box = document.createElement('div');
+    box.style = 'background:var(--bg);padding:20px;border-radius:12px;max-width:720px;width:90%;box-shadow:0 12px 40px rgba(0,0,0,0.6);';
+
+    box.innerHTML = `
+        <h3 style="font-size:18px;margin-bottom:8px;color:var(--text)">Select Handles to Display</h3>
+        <p style="color:var(--muted);font-size:12px;margin-bottom:10px">Hold Ctrl/Cmd to select multiple handles. Max 10 handles.</p>
+        <select id="multiHandlesSelect" multiple size="10" style="width:100%;padding:8px;border-radius:6px;background:rgba(255,255,255,0.02);color:var(--text);border:1px solid rgba(255,255,255,0.04)"></select>
+        <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:12px">
+            <button id="multiCancel" class="refresh-btn" style="background:#6b7280">Cancel</button>
+            <button id="multiApply" class="refresh-btn">Apply</button>
+        </div>
+    `;
+
+    overlay.appendChild(box);
+    document.body.appendChild(overlay);
+
+    const select = document.getElementById('multiHandlesSelect');
+    const handles = studentsData.map(s=>s.handle).sort();
+    handles.forEach(h=>{
+        const opt = document.createElement('option'); opt.value = h; opt.text = h; select.appendChild(opt);
+    });
+
+    document.getElementById('multiCancel').addEventListener('click', ()=>{ overlay.remove(); });
+    document.getElementById('multiApply').addEventListener('click', ()=>{
+        const chosen = Array.from(select.selectedOptions).map(o=>o.value).slice(0,10);
+        overlay.remove();
+        if(!chosen || chosen.length===0) return;
+        drawWeeklyChart(studentsData, chosen);
+    });
+}
+
 // -------------------- UPCOMING CONTESTS --------------------
 async function loadUpcomingContests(){
     const container = document.getElementById("upcomingContests");
@@ -1284,19 +1079,18 @@ async function loadUpcomingContests(){
                           c.isSoon ? "bg-yellow-700 border border-yellow-500" : "bg-gray-700 border border-gray-600";
             
             html += `
-            <div class="${bgClass} rounded p-3 contest-card">
+            <div id="contest-${c.id}" data-contest-id="${c.id}" class="${bgClass} rounded p-3 contest-card" onclick="(function(){ history.pushState({}, '', '/contests/${c.id}'); router(); })()" style="cursor: pointer;">
                 <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2">
                     <div class="flex-1">
-                        <a href="${c.url}" target="_blank" 
-                           class="hover:underline font-bold text-sm md:text-base">
+                        <div class="hover:underline font-bold text-sm md:text-base text-blue-200">
                            ${c.name} ${c.isLive?"🔥 LIVE":c.isSoon?"⏰ Soon":""}
-                        </a>
+                        </div>
                         <div class="flex flex-wrap gap-2 mt-1 text-xs">
                             <span class="bg-gray-800 px-2 py-1 rounded">🕒 ${c.startTime} (BD)</span>
                             <span class="bg-gray-800 px-2 py-1 rounded">⏱ ${c.duration}</span>
                         </div>
                     </div>
-                    <a href="${c.url}" target="_blank" 
+                    <a href="${c.url}" target="_blank" rel="noopener noreferrer"
                        class="bg-blue-600 hover:bg-blue-700 px-3 py-1 rounded font-bold text-xs whitespace-nowrap">
                        Participate
                     </a>
@@ -1337,7 +1131,7 @@ async function loadLast3Contests(){
     
     try{
         const res = await fetch(`${API_BASE}/api/contests/last-3-standings`);
-        const data = await response.json();
+        const data = await res.json();
         if(data.status !== "OK") throw new Error("Failed");
 
         if(!data.contests || data.contests.length === 0){
@@ -1501,99 +1295,125 @@ function updateQuickStats() {
     `;
 }
 
-// -------------------- FEEDBACK FORM --------------------
-document.addEventListener('DOMContentLoaded', function() {
-    const feedbackForm = document.getElementById('feedbackForm');
-    if (feedbackForm) {
-        feedbackForm.addEventListener('submit', async function(e) {
-            e.preventDefault();
-            
-            const name = document.getElementById('name').value.trim();
-            const email = document.getElementById('email').value.trim();
-            const message = document.getElementById('message').value.trim();
-            const feedbackMessage = document.getElementById('feedbackMessage');
-            
-            if (message.length < 10) {
-                feedbackMessage.textContent = "Message must be at least 10 characters long.";
-                feedbackMessage.className = "text-red-400 text-sm";
-                feedbackMessage.classList.remove('hidden');
-                return;
-            }
-            
-            const submitBtn = feedbackForm.querySelector('button[type="submit"]');
-            const originalText = submitBtn.innerHTML;
-            submitBtn.innerHTML = '<span class="text-sm">Sending...</span>';
-            submitBtn.disabled = true;
-            
-            try {
-                const response = await fetch(`${API_BASE}/api/feedback`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ name, email, message })
-                });
-                
-                const data = await response.json();
-                
-                if (data.status === "OK") {
-                    feedbackMessage.textContent = data.comment;
-                    feedbackMessage.className = "text-green-400 text-sm";
-                    
-                    feedbackForm.reset();
-                    
-                    setTimeout(() => {
-                        feedbackMessage.classList.add('hidden');
-                    }, 5000);
-                } else {
-                    feedbackMessage.textContent = data.comment || "Failed to send feedback.";
-                    feedbackMessage.className = "text-red-400 text-sm";
-                }
-            } catch (error) {
-                console.error("Error submitting feedback:", error);
-                feedbackMessage.textContent = "Network error. Please try again.";
-                feedbackMessage.className = "text-red-400 text-sm";
-            } finally {
-                feedbackMessage.classList.remove('hidden');
-                submitBtn.innerHTML = originalText;
-                submitBtn.disabled = false;
-            }
-        });
-    }
-});
 
 // -------------------- INITIAL LOAD --------------------
+// -------------------- SIMPLE CLIENT ROUTER --------------------
+function hideAllMainSections() {
+    const ids = [
+        'manual',
+        'weeklyWinner',
+        'leaderboardSection',
+        'previousDays',
+        'quickFacts',
+        'weeklyTagWinners',
+        'weeklyChartSection',
+        'contests'
+    ];
+    ids.forEach(id => {
+        const el = document.getElementById(id);
+        if (el && !el.classList.contains('hidden')) el.classList.add('hidden');
+    });
+}
+
+function showSectionByPath(path) {
+    const routeMap = {
+        '/': 'leaderboardSection',
+        '/daily': 'leaderboardSection',
+        '/manual': 'manual',
+        '/leaderboard': 'leaderboardSection',
+        '/previous': 'previousDays',
+        '/weekly': 'weeklyChartSection',
+        '/contests': 'contests'
+    };
+
+    // Exact match first
+    let target = routeMap[path] || null;
+    // Support direct routes like /contests/2224 and legacy /contest/2224
+    if (!target) {
+        if (path.startsWith('/contests') || path.startsWith('/contest')) {
+            target = 'contests';
+        } else {
+            target = routeMap['/'];
+        }
+    }
+    hideAllMainSections();
+    const el = document.getElementById(target);
+    if (el) el.classList.remove('hidden');
+
+    // When showing leaderboard, also ensure the Weekly Winner card is visible
+    // so the winner appears at the top of the leaderboard as expected.
+    if (target === 'leaderboardSection') {
+        const ww = document.getElementById('weeklyWinner');
+        if (ww && ww.classList.contains('hidden')) ww.classList.remove('hidden');
+    }
+
+    // Trigger data loads for heavier pages
+    if (target === 'leaderboardSection') {
+        ensureStudentsLoaded();
+        if (leaderboardAutoRefreshTimer) clearInterval(leaderboardAutoRefreshTimer);
+        leaderboardAutoRefreshTimer = setInterval(() => {
+            const leaderboardSection = document.getElementById('leaderboardSection');
+            if (leaderboardSection && !leaderboardSection.classList.contains('hidden') && !isLoading) {
+                loadStudents('__fresh__');
+            }
+        }, 180000);
+    } else if (target === 'contests') {
+        // If path includes an id like /contests/2224, extract it to scroll after loading
+        const parts = path.split('/').filter(Boolean);
+        const contestId = parts.length >= 2 ? parts[1] : null;
+        loadContestsOnce().then(() => {
+            if (contestId) {
+                setTimeout(() => {
+                    const el = document.getElementById(`contest-${contestId}`);
+                    if (el) {
+                        el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                        el.classList.add('contest-highlight');
+                        setTimeout(() => el.classList.remove('contest-highlight'), 3000);
+                    }
+                }, 150);
+            }
+        });
+    } else if (target === 'weeklyChartSection') {
+        // if we already have data, draw chart; otherwise load students first
+        if (studentsData && studentsData.length) {
+            drawWeeklyChart(studentsData);
+        } else {
+            ensureStudentsLoaded().then(() => {
+                if (studentsData && studentsData.length) drawWeeklyChart(studentsData);
+            });
+        }
+    }
+}
+
+function router() {
+    const path = window.location.pathname.replace(/\/+$/, '') || '/';
+    showSectionByPath(path);
+}
+
+// Intercept internal nav links to use History API
+document.addEventListener('click', function(e){
+    const a = e.target.closest('a');
+    if (!a) return;
+    const href = a.getAttribute('href');
+    if (!href) return;
+    if (href.startsWith('http') || href.startsWith('mailto:') || href.startsWith('#')) return;
+    // same-origin internal link
+    e.preventDefault();
+    history.pushState({}, '', href);
+    router();
+});
+
+window.addEventListener('popstate', router);
+
 document.addEventListener('DOMContentLoaded', async function() {
     startBDTimeUpdater();
+    initThemeToggle();
     
     // Initialize status
     updateStatusPanel();
     
-    // Initialize code editor
-    initializeCodeEditor();
-    
-    // Load student count first
+    // Load student count first (route handlers decide what else to load)
     totalStudents = await loadStudentCount();
-    
-    // Load daily problem
-    loadDailyProblem();
-    
-    // Load main data
-    if (totalStudents > 0) {
-        setTimeout(() => {
-            loadStudents();
-        }, 500);
-    } else {
-        // Show error if no students
-        document.getElementById("leaderboard").innerHTML = `
-            <div class="text-center py-8">
-                <p class="text-red-400 text-lg">❌ No students found</p>
-                <p class="text-gray-300 text-sm mt-2">Please check students.json file</p>
-                <button onclick="location.reload()" class="refresh-btn mt-4">
-                    🔄 Reload Page
-                </button>
-            </div>
-        `;
-        updateStatusPanel("statusLoading", "❌ No students found", "error");
-    }
     
     // Keyboard shortcuts
     const handleSearch = document.getElementById('handleSearch');
@@ -1620,11 +1440,6 @@ document.addEventListener('DOMContentLoaded', async function() {
                 e.preventDefault();
                 loadStudents();
             }
-            // Compile on Ctrl+Enter in editor
-            if((e.ctrlKey || e.metaKey) && e.key === 'Enter' && codeEditor.hasFocus()) {
-                e.preventDefault();
-                compileCode();
-            }
         });
     }
     
@@ -1633,8 +1448,7 @@ document.addEventListener('DOMContentLoaded', async function() {
         if (weeklyChartInstance) {
             weeklyChartInstance.resize();
         }
-        if (codeEditor) {
-            codeEditor.refresh();
-        }
     });
+    // Initialize router to show correct page based on URL
+    router();
 });
