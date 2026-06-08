@@ -2,7 +2,7 @@ const API_BASE = window.location.port === "3000"
     ? "" // Use relative URLs when on localhost:3000
     : window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1"
     ? "http://localhost:3000" // For Live Server on other ports
-    : "https://puc-student-tracker.onrender.com"; // Production Render URL
+    : "https://tracking-k1dg.onrender.com"; // Production Render URL
 
 const cfColors = {
     newbie: "text-gray-400",
