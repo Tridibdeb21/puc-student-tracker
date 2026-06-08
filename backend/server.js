@@ -292,7 +292,7 @@ async function fetchStudentData(dayOffset = 0) {
     }
 
     let failedHandles = [];
-    const concurrency = parseInt(process.env.STUDENT_FETCH_CONCURRENCY) || 6;
+    const concurrency = parseInt(process.env.STUDENT_FETCH_CONCURRENCY) || 3; // 3 concurrent = ~3 req/sec, balanced speed vs safety
     // Pre-fetch user.info for all students in batches to reduce number of API calls
     const userInfoMap = new Map();
     async function fetchAllUserInfos() {
